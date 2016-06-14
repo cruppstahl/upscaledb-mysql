@@ -7,38 +7,45 @@ Early release - not yet ready for production.
 
 ## Installation
 
-1. Clone the mysql-server repository
+1. Install upscaledb version 2.2.1
+
+    git clone https://github.com/cruppstahl/upscaledb.git
+    cd upscaledb
+    git checkout topic/2.2.1
+    ./configure && make -j 5 && sudo make install
+
+2. Clone the mysql-server repository
 
     git clone https://github.com/mysql/mysql-server.git
     cd mysql-server
     git checkout mysql-5.7-12
 
-2. Copy the upscaledb storage engine
+3. Copy the upscaledb storage engine
 
     cp -r ~/upscaledb-mysql/storage/upscaledb ~/mysql-server/storage
 
-3. Build MySQL
+4. Build MySQL
 
     cd ~/mysql-server
     make -DCMAKE_BUILD_TYPE=Release
     make -j 5
 
-4. Copy the storage engine plugin to your MySQL installation directory
+5. Copy the storage engine plugin to your MySQL installation directory
     (the installation directory depends on the linux distribution
     you use)
 
     sudo cp storage/upscaledb/ha_upscaledb.so /usr/local/mysql/lib/plugin
 
-5. Restart mysqld
+6. Restart mysqld
 
     service mysql restart
 
-6. Register the new storage engine
+7. Register the new storage engine
 
     mysqld --user=root <database>
     mysql> INSTALL  PLUGIN upscaledb SONAME 'ha_upscaledb.so';
 
-7. Create your tables
+8. Create your tables
 
     mysql> CREATE TABLE test (id INTEGER PRIMARY KEY) ENGINE=upscaledb;
 
