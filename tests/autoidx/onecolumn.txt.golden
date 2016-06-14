@@ -1,0 +1,91 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (num INTEGER) ENGINE=upscaledb
+--------------
+
+--------------
+DROP TABLE test
+--------------
+
+--------------
+CREATE TABLE test (num INTEGER) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES (1)
+--------------
+
+--------------
+INSERT INTO test VALUES (1)
+--------------
+
+--------------
+INSERT INTO test VALUES (2)
+--------------
+
+--------------
+INSERT INTO test VALUES (3)
+--------------
+
+--------------
+INSERT INTO test VALUES (4)
+--------------
+
+--------------
+INSERT INTO test VALUES (5)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+num
+1
+1
+2
+3
+4
+5
+--------------
+SELECT * FROM test WHERE num > 3
+--------------
+
+num
+4
+5
+--------------
+SELECT * FROM test WHERE num >= 3
+--------------
+
+num
+3
+4
+5
+--------------
+SELECT * FROM test WHERE num < 3
+--------------
+
+num
+1
+1
+2
+--------------
+SELECT * FROM test WHERE num <= 3
+--------------
+
+num
+1
+1
+2
+3
+--------------
+SELECT * FROM test WHERE num < 0
+--------------
+
+--------------
+SELECT * FROM test WHERE num > 5
+--------------
+

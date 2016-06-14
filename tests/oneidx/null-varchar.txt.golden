@@ -1,0 +1,42 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (text VARCHAR(30), id INTEGER PRIMARY KEY) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES ("one", 1)
+--------------
+
+--------------
+INSERT INTO test VALUES ("two", 2)
+--------------
+
+--------------
+INSERT INTO test VALUES ("three", 3)
+--------------
+
+--------------
+INSERT INTO test VALUES (null, 4)
+--------------
+
+--------------
+INSERT INTO test VALUES ("five", 5)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+text	id
+one	1
+two	2
+three	3
+NULL	4
+five	5
+--------------
+SELECT * FROM test where text = null
+--------------
+

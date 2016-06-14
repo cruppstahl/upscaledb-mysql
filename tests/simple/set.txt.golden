@@ -1,0 +1,33 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (e SET('x-small', 'small', 'medium', 'large', 'x-large') PRIMARY KEY) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES ('x-small,small,small,medium,large,x-large')
+--------------
+
+--------------
+INSERT INTO test VALUES ('small')
+--------------
+
+--------------
+INSERT INTO test VALUES ('medium')
+--------------
+
+--------------
+INSERT INTO test VALUES ('x-large')
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+e
+small
+medium
+x-large
+x-small,small,medium,large,x-large

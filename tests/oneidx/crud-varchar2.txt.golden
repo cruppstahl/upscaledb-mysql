@@ -1,0 +1,113 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (idx VARCHAR(300) PRIMARY KEY, value SMALLINT) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES ("one", 1)
+--------------
+
+--------------
+INSERT INTO test VALUES ("two", 1)
+--------------
+
+--------------
+INSERT INTO test VALUES ("three", 2)
+--------------
+
+--------------
+INSERT INTO test VALUES ("four", 3)
+--------------
+
+--------------
+INSERT INTO test VALUES ("five", 4)
+--------------
+
+--------------
+INSERT INTO test VALUES ("six", 5)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+idx	value
+five	4
+four	3
+one	1
+six	5
+three	2
+two	1
+--------------
+SELECT * FROM test WHERE idx = "one"
+--------------
+
+idx	value
+one	1
+--------------
+SELECT * FROM test WHERE idx LIKE "f%"
+--------------
+
+idx	value
+five	4
+four	3
+--------------
+SELECT * FROM test WHERE value < 3
+--------------
+
+idx	value
+one	1
+three	2
+two	1
+--------------
+SELECT * FROM test WHERE value >= 5
+--------------
+
+idx	value
+six	5
+--------------
+DELETE FROM test WHERE idx = "six"
+--------------
+
+--------------
+DELETE FROM test WHERE value = 3
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+idx	value
+five	4
+one	1
+three	2
+two	1
+--------------
+UPDATE test SET idx = "foo" WHERE value = 4
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+idx	value
+foo	4
+one	1
+three	2
+two	1
+--------------
+UPDATE test SET value = 3 WHERE idx = "four"
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+idx	value
+foo	4
+one	1
+three	2
+two	1

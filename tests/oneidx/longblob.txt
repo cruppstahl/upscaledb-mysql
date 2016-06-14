@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS test;
+CREATE TABLE test (file LONGBLOB, id INTEGER PRIMARY KEY) ENGINE=upscaledb;
+INSERT INTO test VALUES (LOAD_FILE('/usr/share/dict/words'), 1);
+SELECT * FROM test;
+INSERT INTO test VALUES (LOAD_FILE('/usr/share/dict/words'), 2);
+SELECT * FROM test;

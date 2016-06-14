@@ -1,0 +1,24 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+DROP TABLE IF EXISTS foo
+--------------
+
+--------------
+CREATE TABLE test (num INTEGER) ENGINE=upscaledb
+--------------
+
+--------------
+RENAME TABLE test TO foo
+--------------
+
+--------------
+DROP TABLE foo
+--------------
+
+--------------
+DROP TABLE test
+--------------
+

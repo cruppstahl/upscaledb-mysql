@@ -1,0 +1,30 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (file MEDIUMTEXT, id INTEGER PRIMARY KEY) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES (LOAD_FILE('/usr/share/dict/words'), 1)
+--------------
+
+--------------
+INSERT INTO test VALUES (LOAD_FILE('/usr/share/dict/words'), 2)
+--------------
+
+--------------
+SELECT LENGTH(file) FROM test
+--------------
+
+LENGTH(file)
+938848
+938848
+--------------
+SELECT id FROM test
+--------------
+
+id
+1
+2

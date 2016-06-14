@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS test;
+CREATE TABLE test (file MEDIUMTEXT, id INTEGER PRIMARY KEY) ENGINE=upscaledb;
+INSERT INTO test VALUES (LOAD_FILE('/usr/share/dict/words'), 1);
+INSERT INTO test VALUES (LOAD_FILE('/usr/share/dict/words'), 2);
+SELECT LENGTH(file) FROM test;
+SELECT id FROM test;

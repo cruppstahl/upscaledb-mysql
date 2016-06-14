@@ -1,0 +1,464 @@
+x Create new storage handler "upscaledb"; copy the ha_example directory
+    and edit the CMakeLists.txt file
+x TODO describe the various flags in sql/handler.h
+    -> only few of the flags are necessary
+
+x create/open tables, and more basic functions
+    x stubs exist; create a table, set breakpoints in all relevant functions
+    x create
+    x open
+    x transactions are enabled by default
+    x alter table: must update the upscaledb databases - not reqd
+    x drop table (implemented, but change the file extensions to "ups"!)
+    x for primary key and all indices: create separate databases
+        x index tables ((*field)->m_indexed == true): must be unique
+        x no indices at all? create record-number database
+        x auto-increment? create record-number database
+            m_create_info->used_fields & HA_CREATE_USED_AUTO
+            table->found_next_number_field
+    x when opening then make sure the fields in dbmap are correctly
+        initialized!
+        x no indices at all? open record-number database
+
+x fix the create table/delete table/create table roundtrips
+    create table upscaledb (id integer primary key) engine=upscaledb;
+    drop table upscaledb;
+    create table upscaledb (id integer primary key) engine=upscaledb;
+    drop table upscaledb;
+    create table upscaledb (id integer primary key) engine=upscaledb;
+
+x only one index (primary key)
+    x create/open: make unique primary index 
+    x insert: must update all indices (anonymous transaction)
+    x select
+    x update
+    x delete
+
+x no index at all
+    x create/open: use recno database as primary index
+    x insert
+    x select
+    x update
+    x delete
+
+x "drop table" needs to delete all the files
+
+x Make sure that auto-increment columns are working
+    x are there other columns which can be auto-incremented? - no
+    x implement it for primary keys
+    -> in write_row it is possible:
+        if (table->next_number_field && record == table->record[0]) ...
+    x update existing columns
+
+x create a test framework with golden files which are sent to the server,
+    and a script which runs them all
+
+x many indices
+    x insert: many indices; use a transaction
+        x return correct error if a duplicate is inserted in a unique table
+        x secondary index: use different key/record
+    x select
+        x with multiple indices, by primary key
+        x with multiple indices, by secondary key
+    x delete: must update all indices (in a transaction)
+        x with multiple indices, by primary key
+        x with multiple indices, by secondary key
+            delete from upscaledb where value = 2;
+    x update: must update all indices (in a transaction)
+        x update via primary key
+        x update via secondary key
+
+x add another test case:
+    DROP TABLE IF EXISTS test;
+    CREATE TABLE test (value INTEGER NOT NULL, INDEX(value), num INTEGER PRIMARY
+    KEY) ENGINE=upscaledb;
+    INSERT INTO test VALUES(1, 1); 
+    SELECT * FROM test;
+    UPDATE test SET value = value + 1 WHERE num <= 4;
+    SELECT * FROM test;
+
+x add another test case:
+    DROP TABLE IF EXISTS test;
+    CREATE TABLE test (value INTEGER NOT NULL, INDEX(value), num INTEGER PRIMARY
+    KEY) ENGINE=upscaledb;
+    INSERT INTO test VALUES(1, 1); 
+    INSERT INTO test VALUES(1, 2); 
+    INSERT INTO test VALUES(1, 3);
+    INSERT INTO test VALUES(2, 4);
+    INSERT INTO test VALUES(3, 5);
+    UPDATE test SET value = value + 1 WHERE num <= 4;
+    SELECT * FROM test;
+    UPDATE test SET num = 10 WHERE value = 2;
+
+x set record type of secondary indices to key type of the primary key
+
+x try with keys that are not integers, and fix index_read_map()
+
+x test with blobs as primary keys (VARCHAR)
+
+x test with indexed blobs (VARCHAR)
+
+x why are VARCHAR(30) and VARBINARY(30) stored as fixed length? How can I
+    get the actually used size of a row? -> done (1st byte in the stream)
+
+x CREATE TABLE test3 (value VARBINARY(300) NOT NULL, INDEX(value), num INTEGER PRIMARY KEY) engine=upscaledb;
+    fails b/c an index is created for VARBINARY2, but they are not supported
+    by upscaledb (but work with innodb)
+    x same about VARCHAR2
+
+x check if a binary key is fixed length; if yes then set UPS_PARAM_KEY_SIZE
+    i.e. CHAR(30)
+
+x check if record is fixed length; if yes then set UPS_PARAM_RECORD_SIZE
+    table->s->stored_rec_length? (it's fixed length if it does not contain
+        VARCHAR/VARBINARY fields)
+    table->s->blob_fields, table->s->varchar_fields
+
+x combine the index_* functions -they are mostly identical
+    x also, i think they're never called on the primary key. We always have
+        to load the row from the primary index. - not true!
+    x same about rnd_*, but they only operate on the primary index
+
+x when checking with ups_dump, it seems that i.e. for a table with two integer
+    indices (each 4 bytes), we store a row of 16 bytes with garbage at the end.
+    are we storing too much??
+    x use table->s->stored_rec_length instead of table->s->rec_buff_length
+    x what about variable-length records, i.e. VARCHAR?
+        -> innodb creates a "mask" for packing/unpacking records
+        -> we need to pack them and manually remove the padding
+        -> also unpack them when they are retrieved
+        x start with pack/unpack functions which simply modify the data, just
+            to make sure that the flow is correct
+        x then implement pack/unpack
+
+x test with NULL varchar, esp. for packing/unpacking
+
+x test with BLOBs - their row format is different, and they're stored in
+    separate memory chunks
+    - use INSERT INTO PICTABLE (MYID, PIC) VALUES (3, LOAD_FILE('/PHP/ME.JPG'));
+    x TINYBLOB
+    x BLOB
+    x MEDIUMBLOB
+    x LONGBLOB
+    x create an index on a BLOB - does this make sense?
+    x create tests with multiple BLOB columns
+
+x test with TEXT
+    x TINYTEXT
+    x TEXT
+    x MEDIUMTEXT
+    x LONGTEXT
+    x create an index on a TEXT - does this make sense?
+    x create tests with multiple TEXT columns
+
+x in a table with two columns (c1 BLOB, c2 INTEGER), if there's a "SELECT c2",
+    then it's not necessary to unpack the blob! but currently the full row
+    is unpacked
+
+x check if there are other key types which can be mapped to UPS-types, i.e.
+    timestamp/bool/enum/set etc
+    http://dev.mysql.com/doc/refman/5.7/en/storage-requirements.html
+    x YEAR - 1 byte
+    x DATE - 3 bytes
+    x TIME - 3 bytes + fractions
+    x DATETIME - 5 bytes + fractions
+    x TIMESTAMP - 4 bytes + fractions
+    x ENUM - 1 or 2
+    x SET - 1-8
+
+x for secondary indices: if primary key is fixed length binary then also
+    set the length for the secondary key!
+
+x use likely/unlikely macros
+
+x test multi-indices with auto-increment index/pk
+    - not possible, there can only be one auto-increment column
+
+x support ALTER TABLE
+
+x run a first test with sysbench:
+    sysbench --mysql-socket=/tmp/mysql.sock --test=oltp --oltp-table-size=50000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no prepare
+
+    sysbench --mysql-socket=/tmp/mysql.sock --test=oltp --oltp-table-size=50000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no --max-time=60 run
+
+x "sysbench --oltp-table-size=1000000 prepare" is awefully slow
+    x identify bottleneck (theory: overwriting the duplicate table)
+        -> yes; the pages are not even flushed, but the batched updates
+            trigger many calls to DiskBlobManager::overwrite, with huge records
+    x come up with ideas how to fix this
+        x create DiskBlobManager::overwrite_regions(), which does not overwrite
+            the full record but small regions
+        x need 1 region for the actual modification, another for the
+            increased counter at the front (maybe)
+        x only mark pages dirty if they are modified: all regions and the
+            first page (with the lsn)
+        x skip this if only 1 page is modified or if compression is enabled
+            or if the record grows!
+
+x innodb is much much faster in all benchmarks; figure out how to improve
+    performance
+    x run reliable benchmarks (release mode)
+
+    x "prepare" stage: run sql commands w/o creating the index
+        -> upscaledb 1.2 sec, innodb 0.77 sec
+
+    x for bulk inserts: increase number of batched transactions
+        -> innodb does something similar
+        -> setting to 30 drops wallclock time from 1.2 sec to 0.68 sec,
+            and "sysbench prepare" from 30 sec to 16 sec
+        x set threshold through a parameter (a global setting)
+
+    x if primary key is AUTO_INCREMENT: use UPS_HINT_APPEND
+        -> currently not allowed for ups_db_insert
+        x specify UPS_OVERWRITE for unique indices (like the primary key)
+            to avoid btree lookups
+        x enable the flag for ups_db_insert. currently,
+            when enabled (temporarily), the test fails. Maybe the flag is
+            misinterpreted?? fix this -> not required
+        x verify (in a debugger) that we end up appending the key
+            -> ok
+
+    x when updating a column with multiple indices, all indices are deleted
+        and then re-created. But this is usually not required.
+        x whenever a key is inserted with UPS_OVERWRITE: first assert that
+          the key does not exist!
+        x if the primary key is updated then it's sufficient to re-insert the
+          primary index, then overwrite the records of the secondary indices.
+        x if a secondary key is updated then it's sufficient to re-insert its
+          specific index.
+        x if a non-indexed column is updated then it's sufficient to overwrite
+          the primary key's record.
+        x fix the tests and sysbench - currently fails!
+
+    x once more run benchmarks. If necessary then split the benchmark into
+        finer granularity for DELETEs, UPDATEs (primary), UPDATES (secondary)
+        etc and identify those queries which are slow
+        -> "prepare" is now faster, "run" is slower (factor 10)
+        x run for 5 minutes, dump all SQL statements
+        x lock.txt: ok - equal
+        x select-point.txt: ok - upscaledb is faster
+        x select-sum.txt: ok - equal
+        x select-range.txt: ok - equal
+        x update-primary.txt: ok - upscaledb is faster
+        x insert.txt: innodb fails (dup. key) - why does upscaledb succeed??
+        x deletes.txt: innodb (4 sec) is much faster (upscaledb: 4 min!!)
+            x try to optimize with BlobManager::overwrite_range
+                - improves, but still much slower
+        x update-secondary.txt: innodb is much faster; assumption: if a
+            secondary index is deleted, to be later re-inserted, then
+            deleting it kills performance
+
+x use sysbench 0.5
+LD_LIBRARY_PATH=/usr/local/mysql/lib time ./sysbench --test=tests/db/oltp.lua --mysql-socket=/tmp/mysql.sock  --oltp-table-size=1000000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no prepare
+
+LD_LIBRARY_PATH=/usr/local/mysql/lib time ./sysbench --test=tests/db/oltp.lua --mysql-socket=/tmp/mysql.sock  --oltp-table-size=1000000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no --max-time=60 run
+
+    x why is innodb's "prepare" twice as fast?? -> try with more data (10 mio
+        rows)
+        -> difference is neglectable
+
+x insert.txt: innodb fails (dup. key) - why does upscaledb succeed??
+    -> fixed
+
+x "recognize" bulk inserts (i.e. by remembering the last inserted key),
+    then specify UPS_OVERWRITE; this will gain 50% performance
+    x only for unique indices!
+    x load max. key when opening the database
+    x compare in write_row(), update_row()
+
+x "drop table" returns an error, has to be run twice to succeed
+
+x compound index - an index with multiple "parts"
+    x create
+    x open
+    x insert
+    x select
+    x update
+    x delete
+    x test with INTEGER, INTEGER
+    x test with CHAR/30, CHAR/30
+    x test with CHAR/30, INTEGER
+    x test with INTEGER, CHAR/30
+    x test with VARCHAR, INTEGER
+    x test with INTEGER, VARCHAR
+    x test with VARCHAR, VARCHAR
+
+    x test with VARCHAR2, INTEGER
+    x test with INTEGER, VARCHAR2
+    x test with VARCHAR2, VARCHAR2
+
+x test with columns that are NULL
+
+x disable duplicates for unique indices
+    x investigate table flag HA_ANY_INDEX_MAY_BE_UNIQUE? -> not required
+    x set flag in DbDesc if column is unique 
+    x specify UPS_OVERWRITE if key is unique
+    x add tests; currently they fail (i.e. create a UNIQUE index in
+        compoundidx/crud.txt)
+
+x benchmark w/ multiple threads
+    --num-threads=1
+    --num-threads=2
+    --num-threads=4
+    --num-threads=8
+    --num-threads=16
+    --num-threads=32
+    -> ok; nothing changes much
+
+x when running all tests, error -22 (locked) pops up frequently
+    ./run.sh ./oneidx/crud-bigint.txt
+    -> error 31 (txn conflict)
+
+x fix valgrind errors
+
+x ./oneidx/indexed-mediumblob.txt
+    index is 100 bytes, but the secondary index actually stores the full
+    blob!
+    x also check w/ valgrind
+
+x find a way to set the cache size
+    - through a file ($table.config)
+    - through a table comment (recommended); they can be changed with
+        "alter table"
+    - through a MySQL system variable?
+    x for the alpha release: use an environment variable UPSCALEDB_CACHE_SIZE
+
+o write a readme
+    - link to upscaledb.com
+    - current state is alpha
+    - installation: how to?
+    - running sysbench tests (0.5)
+    - features
+
+o first release (alpha) ---------------------------------------------------
+    o create public repository in github
+    o fork mysql-server
+    o look for influencers which can run benchmarks
+    o publish a blog post
+
+o run more tests
+    o perl ./mysql-test-run.pl --suite=engines/funcs --force --mysqld=--default-storage-engine=upscaledb --mysqld-env=LD_LIBRARY_PATH=/home/ruppc/prj/upscaledb/src/.libs 
+        -> fails b/c storage engine is unknown (maybe the plugin is not
+            registered?)
+      --extern --socket=/tmp/mysql.sock
+        -> uses innodb
+    o --suite=engines/iuds
+
+o check out code path of a SELECT statement; can we provide a shortcut, and
+    use UQI transparently??
+    x run sysbench with simple point SELECTs (--oltp-test-mode=simple)
+        -> ok, upscaledb is much faster
+    x we might be able to use ICT - "Index Condition Pushdown". See
+        handler.h cond_push(), cond_pop(), idx_cond_push() etc
+        -> no, according to the documentation we won't gain much
+    o use UQI for a few simple queries? i.e. COUNT, COUNT DISTINCT,
+        SUM, AVERAGE
+    o use UQI for more complex queries by pushing the AST down to the
+        btree? So far this will only work if there's only one (physical) index
+        in the query, and if the result is only one row. Not sure how multiple
+        rows can be propagated.
+     -> do not invest too much time b/c users can use the regular API
+        to access the data
+
+o investigate "item condition pushdown" - it helps with long table scans;
+    basically it's the predicate filtering for non-indexed columns
+
+o the sorting for VARCHAR/CHAR/*TEXT is according to the encoding selected by
+    the user!
+    o verify this
+    o create test cases
+
+o once more double-check the table flags
+    HA_PARTIAL_COLUMN_READ
+    HA_CAN_INDEX_VIRTUAL_GENERATED_COLUMN
+
+o implement UpscaledbHandler::records_in_range()
+o implement UpscaledbHandler::records()
+o implement UpscaledbHandler::extra()
+o implement UpscaledbHandler::info()
+o implement UpscaledbHandler::delete_all_rows()
+o implement UpscaledbHandler::truncate()
+o implement all other missing functions
+
+o support additional flags
+    o crc32
+        m_create_info->used_fields & HA_CREATE_USED_CHECKSUM (handler.h)
+    o compression for records
+        m_create_info->used_fields & HA_CREATE_USED_COMPRESS (handler.h)
+    o cache size
+    o in-memory environment
+    o disable journalling (or transactions?)
+    o integer compression for indices
+
+    o store run-time configuration in a .properties file in the
+        table's directory (i.e. ${table-name}.properties); this is flexible
+        enough for all run-time options that will come
+
+o use upsserver to access the environment remotely, if enabled in the
+    configuration (.properties-file)
+    o only bind to localhost; allow others through the config file
+    o document the security problems of this approach (all MySQL security
+        layers are ignored)
+    . can we fix these security issues? or even have our own "GRANT TABLE"
+        access right?
+
+o what if an index is created or a column with an index is dropped
+    - will the field offsets be modified? if yes then the database names
+    will no longer match
+    o add more tests with ALTER TABLE
+
+o temporary tables: automatically disable journalling
+
+o run other benchmarks (TPC-C etc)
+    https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
+    https://www.percona.com/forums/questions-discussions/mysql-and-percona-server/10501-help-with-tpcc-and-mysql
+
+o second release (beta) --------------------------------------------------
+
+o stabilize/fix upcoming bugs
+o lots of PR
+o etc
+
+o public release ---------------------------------------------------------
+
+o secondary keys should not require a lookup of the primary key;
+    directly store the blob id of the record
+    -> look at BDB, they have a similar API
+
+o when updating: re-use the cursor by temporarily attaching it to the
+    current transaction (is that possible?)
+
+o improve the performance for duplicate keys
+    -> idea: split the duplicate table into smaller (linked) blobs; updating
+        and deleting records would be very fast
+    x move DuplicateTable to its own header file
+    o need to manage this linked list in the DuplicateTable
+    o access for cursors need to be accelerated, otherwise each access
+        requires traversal of the list (i.e. by caching the last block and
+        the last position)
+    o make the blob sizes variable; see what performs best
+    o then get rid of the regions again (unless they still make sense)
+    o can we remain backwards compatible? I'd rather not
+
+o natively support transactions with BEGIN/COMMIT/ABORT
+    o this already works, but can we use upscaledb's transaction
+        implementation?
+    o see mysql-tests/suite/engines/README (item #3) on how to test this
+
+x support encryption
+    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
+    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
+    using a cheap solution or an expensive one?
+
+. improve auto-inc performance; the current code always calls index_last() to
+    get the last known value. Use recno-databases instead!
+    but remember that it's possible to use UPDATE to change the key, as long as
+    the key was not yet used.
+
+. analytical tables: introduce a special option to make a column "analytical"?
+    this column would be indexed by primary key, but be stored in a separate
+    database. This would be perfect performance for UQI queries.
+    -> is this required? we can run queries over the keys of a secondary index
+    -> this would be a "true" column store
+
+

@@ -1,0 +1,103 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (id INT NOT NULL PRIMARY KEY,
+    c1 INTEGER NOT NULL,
+    c2 CHAR(30) NOT NULL,
+    INDEX name (c1, c2)
+) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES(1, 1, "LAST1")
+--------------
+
+--------------
+INSERT INTO test VALUES(2, 2, "LAST2")
+--------------
+
+--------------
+INSERT INTO test VALUES(3, 3, "LAST3")
+--------------
+
+--------------
+INSERT INTO test VALUES(4, 4, "LAST4")
+--------------
+
+--------------
+INSERT INTO test VALUES(5, 5, "LAST5")
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	1	LAST1
+2	2	LAST2
+3	3	LAST3
+4	4	LAST4
+5	5	LAST5
+--------------
+SELECT * FROM test WHERE id >= 3
+--------------
+
+id	c1	c2
+3	3	LAST3
+4	4	LAST4
+5	5	LAST5
+--------------
+SELECT * FROM test WHERE c1 = 3
+--------------
+
+id	c1	c2
+3	3	LAST3
+--------------
+SELECT * FROM test WHERE c2 = "LAST3"
+--------------
+
+id	c1	c2
+3	3	LAST3
+--------------
+UPDATE test SET c1 = 1 WHERE id = 5
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	1	LAST1
+2	2	LAST2
+3	3	LAST3
+4	4	LAST4
+5	1	LAST5
+--------------
+UPDATE test SET c1 = 55 WHERE id = 5
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	1	LAST1
+2	2	LAST2
+3	3	LAST3
+4	4	LAST4
+5	55	LAST5
+--------------
+DELETE FROM test WHERE id = 1
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+2	2	LAST2
+3	3	LAST3
+4	4	LAST4
+5	55	LAST5

@@ -1,0 +1,33 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (e ENUM('x-small', 'small', 'medium', 'large', 'x-large')) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES ('x-small')
+--------------
+
+--------------
+INSERT INTO test VALUES ('small')
+--------------
+
+--------------
+INSERT INTO test VALUES ('medium')
+--------------
+
+--------------
+INSERT INTO test VALUES ('x-large')
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+e
+x-small
+small
+medium
+x-large

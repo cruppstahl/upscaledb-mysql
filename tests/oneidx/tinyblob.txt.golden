@@ -1,0 +1,52 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (file TINYBLOB, id INTEGER PRIMARY KEY) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/tiny.txt'), 1)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+file	id
+1234567890\n	1
+--------------
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/tiny.txt'), 2)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+file	id
+1234567890\n	1
+1234567890\n	2
+--------------
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/tiny.txt'), 3)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+file	id
+1234567890\n	1
+1234567890\n	2
+1234567890\n	3
+--------------
+DELETE FROM test WHERE id = 2
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+file	id
+1234567890\n	1
+1234567890\n	3

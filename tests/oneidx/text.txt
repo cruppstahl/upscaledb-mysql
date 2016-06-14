@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS test;
+CREATE TABLE test (file TEXT, id INTEGER PRIMARY KEY) ENGINE=upscaledb;
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/blob.txt'), 1);
+SELECT * FROM test;
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/blob.txt'), 2);
+SELECT * FROM test;

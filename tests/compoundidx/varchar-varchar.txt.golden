@@ -1,0 +1,117 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (id INT NOT NULL PRIMARY KEY,
+    c1 TEXT NOT NULL,
+    c2 TEXT NOT NULL,
+    INDEX name (c1(30), c2(30))
+) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES(1, "LAST1", "10")
+--------------
+
+--------------
+INSERT INTO test VALUES(2, "LAST2", "20")
+--------------
+
+--------------
+INSERT INTO test VALUES(3, "LAST3", "30")
+--------------
+
+--------------
+INSERT INTO test VALUES(4, "LAST4", "40")
+--------------
+
+--------------
+INSERT INTO test VALUES(5, "LAST5", "50")
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	LAST1	10
+2	LAST2	20
+3	LAST3	30
+4	LAST4	40
+5	LAST5	50
+--------------
+SELECT * FROM test WHERE id >= 3
+--------------
+
+id	c1	c2
+3	LAST3	30
+4	LAST4	40
+5	LAST5	50
+--------------
+SELECT * FROM test WHERE c1 = "LAST3"
+--------------
+
+id	c1	c2
+3	LAST3	30
+--------------
+SELECT * FROM test WHERE c2 = "30"
+--------------
+
+id	c1	c2
+3	LAST3	30
+--------------
+UPDATE test SET c1 = "LAST1" WHERE id = 5
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	LAST1	10
+2	LAST2	20
+3	LAST3	30
+4	LAST4	40
+5	LAST1	50
+--------------
+UPDATE test SET c1 = "LAST55" WHERE id = 5
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	LAST1	10
+2	LAST2	20
+3	LAST3	30
+4	LAST4	40
+5	LAST55	50
+--------------
+UPDATE test SET c2 = "33" WHERE id = 3
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+1	LAST1	10
+2	LAST2	20
+3	LAST3	33
+4	LAST4	40
+5	LAST55	50
+--------------
+DELETE FROM test WHERE id = 1
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	c1	c2
+2	LAST2	20
+3	LAST3	33
+4	LAST4	40
+5	LAST55	50

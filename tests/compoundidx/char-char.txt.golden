@@ -1,0 +1,103 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (id INT NOT NULL PRIMARY KEY,
+    last_name  CHAR(30) NOT NULL,
+    first_name CHAR(30) NOT NULL,
+    INDEX name (last_name, first_name)
+) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES(1, "LAST1", "FIRST1")
+--------------
+
+--------------
+INSERT INTO test VALUES(2, "LAST2", "FIRST2")
+--------------
+
+--------------
+INSERT INTO test VALUES(3, "LAST3", "FIRST3")
+--------------
+
+--------------
+INSERT INTO test VALUES(4, "LAST4", "FIRST4")
+--------------
+
+--------------
+INSERT INTO test VALUES(5, "LAST5", "FIRST5")
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	last_name	first_name
+1	LAST1	FIRST1
+2	LAST2	FIRST2
+3	LAST3	FIRST3
+4	LAST4	FIRST4
+5	LAST5	FIRST5
+--------------
+SELECT * FROM test WHERE id >= 3
+--------------
+
+id	last_name	first_name
+3	LAST3	FIRST3
+4	LAST4	FIRST4
+5	LAST5	FIRST5
+--------------
+SELECT * FROM test WHERE last_name = "LAST3"
+--------------
+
+id	last_name	first_name
+3	LAST3	FIRST3
+--------------
+SELECT * FROM test WHERE first_name = "FIRST3"
+--------------
+
+id	last_name	first_name
+3	LAST3	FIRST3
+--------------
+UPDATE test SET last_name = "LAST1" WHERE id = 5
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	last_name	first_name
+1	LAST1	FIRST1
+2	LAST2	FIRST2
+3	LAST3	FIRST3
+4	LAST4	FIRST4
+5	LAST1	FIRST5
+--------------
+UPDATE test SET last_name = "LAST55" WHERE id = 5
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	last_name	first_name
+1	LAST1	FIRST1
+2	LAST2	FIRST2
+3	LAST3	FIRST3
+4	LAST4	FIRST4
+5	LAST55	FIRST5
+--------------
+DELETE FROM test WHERE id = 1
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+id	last_name	first_name
+2	LAST2	FIRST2
+3	LAST3	FIRST3
+4	LAST4	FIRST4
+5	LAST55	FIRST5

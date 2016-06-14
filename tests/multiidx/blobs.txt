@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS test;
+CREATE TABLE test (txt TINYBLOB, col INTEGER, file MEDIUMBLOB, id INTEGER PRIMARY KEY) ENGINE=upscaledb;
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/tiny.txt'), 10, LOAD_FILE('/usr/share/dict/words'), 1);
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/tiny.txt'), 11, LOAD_FILE('/usr/share/dict/words'), 2);
+INSERT INTO test VALUES (LOAD_FILE('/home/ruppc/prj/upscaledb-mysql/tests/tiny.txt'), 12, LOAD_FILE('/usr/share/dict/words'), 3);
+SELECT txt FROM test;
+SELECT LENGTH(file) FROM test;
+SELECT col FROM test;
+SELECT id FROM test;

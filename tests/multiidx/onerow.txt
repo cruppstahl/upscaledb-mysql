@@ -1,0 +1,7 @@
+DROP TABLE IF EXISTS test;
+CREATE TABLE test (value INTEGER NOT NULL, INDEX(value), num INTEGER PRIMARY KEY) ENGINE=upscaledb;
+INSERT INTO test VALUES(1, 1);
+SELECT * FROM test;
+UPDATE test SET value = value + 1 WHERE num <= 4;
+SELECT * FROM test;
+

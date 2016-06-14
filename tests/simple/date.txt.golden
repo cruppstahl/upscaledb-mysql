@@ -1,0 +1,41 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (d YEAR) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES ('2010')
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+d
+2010
+--------------
+INSERT INTO test VALUES ('2011')
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+d
+2010
+2011
+--------------
+INSERT INTO test VALUES ('2012')
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+d
+2010
+2011
+2012

@@ -1,0 +1,61 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (value INTEGER NOT NULL, UNIQUE INDEX(value), num INTEGER PRIMARY KEY) ENGINE=upscaledb
+--------------
+
+--------------
+INSERT INTO test VALUES(1, 1)
+--------------
+
+--------------
+INSERT INTO test VALUES(2, 2)
+--------------
+
+--------------
+INSERT INTO test VALUES(3, 3)
+--------------
+
+--------------
+INSERT INTO test VALUES(3, 4)
+--------------
+
+--------------
+INSERT INTO test VALUES(3, 5)
+--------------
+
+--------------
+INSERT INTO test VALUES(4, 6)
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+value	num
+1	1
+2	2
+3	3
+4	6
+--------------
+SELECT * FROM test WHERE num >= 3
+--------------
+
+value	num
+3	3
+4	6
+--------------
+UPDATE test SET value = 1 WHERE num = 2
+--------------
+
+--------------
+SELECT * FROM test
+--------------
+
+value	num
+1	1
+2	2
+3	3
+4	6

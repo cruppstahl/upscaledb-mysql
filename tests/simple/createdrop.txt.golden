@@ -1,0 +1,12 @@
+--------------
+DROP TABLE IF EXISTS test
+--------------
+
+--------------
+CREATE TABLE test (num INTEGER) ENGINE=upscaledb
+--------------
+
+--------------
+DROP TABLE test
+--------------
+
