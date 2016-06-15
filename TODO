@@ -323,18 +323,9 @@ x find a way to set the cache size
     - through a MySQL system variable?
     x for the alpha release: use an environment variable UPSCALEDB_CACHE_SIZE
 
-o write a readme
-    - link to upscaledb.com
-    - current state is alpha
-    - installation: how to?
-    - running sysbench tests (0.5)
-    - features
+x write a readme
 
 o first release (alpha) ---------------------------------------------------
-    o create public repository in github
-    o fork mysql-server
-    o look for influencers which can run benchmarks
-    o publish a blog post
 
 o run more tests
     o perl ./mysql-test-run.pl --suite=engines/funcs --force --mysqld=--default-storage-engine=upscaledb --mysqld-env=LD_LIBRARY_PATH=/home/ruppc/prj/upscaledb/src/.libs 
