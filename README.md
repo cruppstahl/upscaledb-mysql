@@ -1,7 +1,7 @@
 # upscaledb-mysql
 Upscaledb storage engine for MySQL
 
-(C) Christoph Rupp, chris@crupp.de; http://www.upscaledb.com
+(C) Christoph Rupp, chris@crupp.de; https://upscaledb.com
 
 Early release - not yet ready for production.
 
