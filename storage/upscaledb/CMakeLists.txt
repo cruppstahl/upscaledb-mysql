@@ -15,17 +15,9 @@
 # See the file COPYING for License information.
 #
 
-include_directories("/home/ruppc/prj/upscaledb/include")
-link_directories("/home/ruppc/prj/upscaledb/src/.libs")
-#find_library(upscaledb UPSCALEDB_LIBRARY)
+find_library(upscaledb UPSCALEDB_LIBRARY)
 
-
-SET(UPSCALEDB_PLUGIN_DYNAMIC "ha_upscaledb")
 SET(UPSCALEDB_SOURCES ha_upscaledb.cc)
-IF(WITH_UPSCALEDB_STORAGE_ENGINE AND NOT WITHOUT_UPSCALEDB_STORAGE_ENGINE)
-  MYSQL_ADD_PLUGIN(upscaledb ${UPSCALEDB_SOURCES} STORAGE_ENGINE DEFAULT)
-ELSEIF(NOT WITHOUT_UPSCALEDB_STORAGE_ENGINE)
-  MYSQL_ADD_PLUGIN(upscaledb ${UPSCALEDB_SOURCES} STORAGE_ENGINE MODULE_ONLY)
-ENDIF()
+MYSQL_ADD_PLUGIN(upscaledb ${UPSCALEDB_SOURCES} STORAGE_ENGINE MODULE_ONLY)
 
 target_link_libraries(upscaledb -lupscaledb -lboost_filesystem)
