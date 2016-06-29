@@ -120,18 +120,15 @@ struct UpscaledbHandler : handler {
 
   // This is a list of flags that indicate what functionality the storage engine
   // implements. The current table flags are documented in handler.h.
-  // TODO fix this
   ulonglong table_flags() const {
     return HA_NO_TRANSACTIONS
             | HA_TABLE_SCAN_ON_INDEX
             | HA_CAN_INDEX_BLOBS    // blobs can be indexed
             | HA_PRIMARY_KEY_IN_READ_INDEX
             | HA_FILE_BASED
-            // | HA_HAS_OWN_BINLOGGING ??
-            // | HA_READ_BEFORE_WRITE_REMOVAL???
-            // | HA_NO_READ_LOCAL_LOCK??
-            // | HA_GENERATED_COLUMNS??
-            // | HA_AUTO_PART_KEY auto-increment in multi-part keys
+            | HA_HAS_OWN_BINLOGGING
+            | HA_NO_READ_LOCAL_LOCK
+            | HA_GENERATED_COLUMNS
             | HA_BINLOG_FLAGS
             | HA_PRIMARY_KEY_REQUIRED_FOR_DELETE;
   }

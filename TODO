@@ -325,7 +325,27 @@ x find a way to set the cache size
 
 x write a readme
 
-o first release (alpha) ---------------------------------------------------
+x first release (alpha) ---------------------------------------------------
+
+x the sorting for VARCHAR/CHAR/*TEXT is according to the encoding selected by
+    the user!
+    x verify this - nothing to do here
+
+x once more double-check the table flags
+    x HA_PARTIAL_COLUMN_READ -- nope
+    x HA_GENERATED_COLUMNS
+        CREATE TABLE sales ( 
+            price_eur DOUBLE,
+            amount INT,
+            total_eur DOUBLE AS (price_eur * amount)
+            index(total_eur));
+    x HA_CAN_INDEX_VIRTUAL_GENERATED_COLUMN -- should work out of the box. If
+        yes then enable it!
+    x HA_READ_BEFORE_WRITE_REMOVAL - no
+    x HA_NO_READ_LOCAL_LOCK - yes!
+    x HA_HAS_OWN_BINLOGGING
+
+x run manual recovery tests!
 
 o run more tests
     o perl ./mysql-test-run.pl --suite=engines/funcs --force --mysqld=--default-storage-engine=upscaledb --mysqld-env=LD_LIBRARY_PATH=/home/ruppc/prj/upscaledb/src/.libs 
@@ -335,33 +355,8 @@ o run more tests
         -> uses innodb
     o --suite=engines/iuds
 
-o check out code path of a SELECT statement; can we provide a shortcut, and
-    use UQI transparently??
-    x run sysbench with simple point SELECTs (--oltp-test-mode=simple)
-        -> ok, upscaledb is much faster
-    x we might be able to use ICT - "Index Condition Pushdown". See
-        handler.h cond_push(), cond_pop(), idx_cond_push() etc
-        -> no, according to the documentation we won't gain much
-    o use UQI for a few simple queries? i.e. COUNT, COUNT DISTINCT,
-        SUM, AVERAGE
-    o use UQI for more complex queries by pushing the AST down to the
-        btree? So far this will only work if there's only one (physical) index
-        in the query, and if the result is only one row. Not sure how multiple
-        rows can be propagated.
-     -> do not invest too much time b/c users can use the regular API
-        to access the data
-
 o investigate "item condition pushdown" - it helps with long table scans;
     basically it's the predicate filtering for non-indexed columns
-
-o the sorting for VARCHAR/CHAR/*TEXT is according to the encoding selected by
-    the user!
-    o verify this
-    o create test cases
-
-o once more double-check the table flags
-    HA_PARTIAL_COLUMN_READ
-    HA_CAN_INDEX_VIRTUAL_GENERATED_COLUMN
 
 o implement UpscaledbHandler::records_in_range()
 o implement UpscaledbHandler::records()
@@ -384,14 +379,7 @@ o support additional flags
     o store run-time configuration in a .properties file in the
         table's directory (i.e. ${table-name}.properties); this is flexible
         enough for all run-time options that will come
-
-o use upsserver to access the environment remotely, if enabled in the
-    configuration (.properties-file)
-    o only bind to localhost; allow others through the config file
-    o document the security problems of this approach (all MySQL security
-        layers are ignored)
-    . can we fix these security issues? or even have our own "GRANT TABLE"
-        access right?
+        o use mysql's ini file format (and parser, if possible)
 
 o what if an index is created or a column with an index is dropped
     - will the field offsets be modified? if yes then the database names
@@ -400,9 +388,43 @@ o what if an index is created or a column with an index is dropped
 
 o temporary tables: automatically disable journalling
 
+o use upsserver to access the environment remotely
+    o only if enabled in the configuration
+    o only bind to localhost; allow others through the config file
+    o document the security problems of this approach (all MySQL security
+        layers are ignored)
+
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
     https://www.percona.com/forums/questions-discussions/mysql-and-percona-server/10501-help-with-tpcc-and-mysql
+
+o check out code path of a SELECT statement; can we provide a shortcut, and
+    use UQI transparently??
+    x run sysbench with simple point SELECTs (--oltp-test-mode=simple)
+        -> ok, upscaledb is much faster
+    x we might be able to use ICT - "Index Condition Pushdown". See
+        handler.h cond_push(), cond_pop(), idx_cond_push() etc
+        -> no, according to the documentation we won't gain much
+    o use UQI for a few simple queries? i.e. COUNT, COUNT DISTINCT,
+        SUM, AVERAGE
+    o use UQI for more complex queries by pushing the AST down to the
+        btree? So far this will only work if there's only one (physical) index
+        in the query, and if the result is only one row. Not sure how multiple
+        rows can be propagated.
+     -> do not invest too much time b/c users can use the regular API
+        to access the data
+
+o natively support transactions with BEGIN/COMMIT/ABORT
+    o this already works, but can we use upscaledb's transaction
+        implementation?
+    o see mysql-tests/suite/engines/README (item #3) on how to test this
+
+o support encryption
+    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
+    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
+    using a cheap solution or an expensive one?
+
+o benchmark with wordpress
 
 o second release (beta) --------------------------------------------------
 
@@ -430,16 +452,6 @@ o improve the performance for duplicate keys
     o make the blob sizes variable; see what performs best
     o then get rid of the regions again (unless they still make sense)
     o can we remain backwards compatible? I'd rather not
-
-o natively support transactions with BEGIN/COMMIT/ABORT
-    o this already works, but can we use upscaledb's transaction
-        implementation?
-    o see mysql-tests/suite/engines/README (item #3) on how to test this
-
-x support encryption
-    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
-    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
-    using a cheap solution or an expensive one?
 
 . improve auto-inc performance; the current code always calls index_last() to
     get the last known value. Use recno-databases instead!
