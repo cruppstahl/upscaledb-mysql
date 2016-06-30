@@ -348,17 +348,32 @@ x once more double-check the table flags
 x run manual recovery tests!
 
 o run more tests
-    o perl ./mysql-test-run.pl --suite=engines/funcs --force --mysqld=--default-storage-engine=upscaledb --mysqld-env=LD_LIBRARY_PATH=/home/ruppc/prj/upscaledb/src/.libs 
-        -> fails b/c storage engine is unknown (maybe the plugin is not
-            registered?)
-      --extern --socket=/tmp/mysql.sock
-        -> uses innodb
+    -> ./mysql-test-run.pl --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so engines/funcs.crash_manyindexes_number
+
+    x engines/funcs.ai_init_insert_id
+    x engines/funcs.an_calendar
+    x engines/funcs.an_string
+    x engines/funcs.an_number
+
+    o engines/funcs.ai_init_alter_table
+    o engines/funcs.ai_init_create_table
+
+    o engines/funcs.crash_manyindexes_string
+    o engines/funcs.crash_manyindexes_number
+
+    o engines/funcs.ai_reset_by_truncate
+      -- requires truncate(); implemented, but frequently returns -22
+
+    o engines/funcs.ai_sql_auto_is_null
+      -- inserts NULL as auto-increment although column was created as NOT NULL
+
     o --suite=engines/iuds
 
 o investigate "item condition pushdown" - it helps with long table scans;
     basically it's the predicate filtering for non-indexed columns
 
 o implement UpscaledbHandler::records_in_range()
+o implementint ha_heap::reset_auto_increment(ulonglong value)
 o implement UpscaledbHandler::records()
 o implement UpscaledbHandler::extra()
 o implement UpscaledbHandler::info()

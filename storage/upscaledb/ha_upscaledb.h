@@ -75,7 +75,7 @@ struct DbDesc {
 
 struct UpscaledbShare : public Handler_share {
   UpscaledbShare()
-    : env(0) {
+    : env(0), autoinc_value(0) {
     thr_lock_init(&lock);
   }
 
@@ -93,6 +93,9 @@ struct UpscaledbShare : public Handler_share {
 
   // if no index is specified: create one
   DbDesc autoidx;
+
+  // current AUTO_INCREMENT value
+  uint64_t autoinc_value;
 };
 
 struct UpscaledbHandler : handler {
@@ -126,6 +129,7 @@ struct UpscaledbHandler : handler {
             | HA_CAN_INDEX_BLOBS    // blobs can be indexed
             | HA_PRIMARY_KEY_IN_READ_INDEX
             | HA_FILE_BASED
+            | HA_NULL_IN_KEY
             | HA_HAS_OWN_BINLOGGING
             | HA_NO_READ_LOCAL_LOCK
             | HA_GENERATED_COLUMNS
@@ -245,12 +249,24 @@ struct UpscaledbHandler : handler {
 
   virtual int index_end();
 
+  // analyzes the current table. This is a nop but returns OK, otherwise
+  // the mysql test suite fails
+  virtual int analyze(THD *thd, HA_CHECK_OPT *check_opt) {
+    return HA_ADMIN_OK;
+  }
+
   void position(const uchar *record);                           ///< required
+
+  // Returns an interval of reserved auto-increment values
+  void get_auto_increment(ulonglong offset, ulonglong increment,
+                  ulonglong nb_desired_values, ulonglong *first_value,
+                  ulonglong *nb_reserved_values);
 
   int info(uint);                                               ///< required
   
   int extra(enum ha_extra_function operation);
 
+  // TODO really required?
   int external_lock(THD *thd, int lock_type);                   ///< required
 
   // Used to delete all rows in a table, including cases of truncate and

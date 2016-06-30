@@ -15,7 +15,9 @@
  * See the file COPYING for License information.
  */
 
+#define MYSQL_SERVER
 #include "sql_class.h"           // MYSQL_HANDLERTON_INTERFACE_VERSION
+
 #include "log.h"
 #include "ha_upscaledb.h"
 #include "probes_mysql.h"
@@ -37,8 +39,19 @@
 #   define unlikely(x) (x)
 #endif
 
+struct CreateInfo {
+  CreateInfo(HA_CREATE_INFO *ci)
+    : autoinc_value(ci->auto_increment_value) {
+  }
+
+  uint64_t autoinc_value;
+};
+
 static std::map<std::string, ups_env_t *> environments;
 static boost::mutex environments_mutex;
+
+static std::map<std::string, CreateInfo *> create_infos;
+static boost::mutex create_infos_mutex;
 
 static void
 log_error_impl(const char *file, int line, const char *function,
@@ -104,6 +117,29 @@ struct CursorProxy {
 
   ups_cursor_t *cursor;
 };
+
+static inline void
+store_create_info(const char *table_name, CreateInfo *create_info)
+{
+  boost::mutex::scoped_lock lock(create_infos_mutex);
+  create_infos[table_name] = create_info;
+}
+
+static inline CreateInfo *
+fetch_create_info(const char *table_name)
+{
+  boost::mutex::scoped_lock lock(create_infos_mutex);
+  return create_infos[table_name];
+}
+
+static inline void
+rename_create_info(const char *old_name, const char *new_name)
+{
+  boost::mutex::scoped_lock lock(create_infos_mutex);
+  CreateInfo *ci = create_infos[old_name];
+  create_infos[new_name] = ci;
+  create_infos.erase(create_infos.find(old_name));
+}
 
 static inline void
 store_env(const char *table_name, ups_env_t *env)
@@ -177,6 +213,10 @@ table_field_info(KEY_PART_INFO *key_part)
   Field *field = key_part->field;
   Field_temporal *f;
 
+  // if key can be null: use a variable-length key
+  if (key_part->null_bit)
+    return std::make_pair((uint32_t)UPS_TYPE_BINARY, UPS_KEY_SIZE_UNLIMITED);
+
   switch (field->type()) {
     case MYSQL_TYPE_TINY:
     case MYSQL_TYPE_YEAR:
@@ -238,7 +278,10 @@ table_key_info(KEY *key_info)
     std::pair<uint32_t, uint32_t> p = table_field_info(&key_info->key_part[i]);
     if (p.second == 0)
       return std::make_pair((uint32_t)UPS_TYPE_BINARY, 0u);
-    total_size += p.second;
+    if (p.second == UPS_KEY_SIZE_UNLIMITED)
+      total_size = UPS_KEY_SIZE_UNLIMITED;
+    else
+      total_size += p.second;
   }
   return std::make_pair((uint32_t)UPS_TYPE_BINARY, total_size);
 }
@@ -516,40 +559,50 @@ initialize_max_key_cache(ups_db_t *db, uint32_t key_type)
   }
 }
 
-// |name|: full qualified name, i.e. "/database/table"
-// |table|: table info, field definitions
-// |create_info|: additional information about client, connection etc
-int
-UpscaledbHandler::create(const char *name, TABLE *table,
-                HA_CREATE_INFO *create_info)
+static inline uint64_t
+initialize_autoinc(const char *name, ups_db_t *db)
 {
-  DBUG_ENTER("UpscaledbHandler::create");
+  // if the database is not empty: read the maximum value
+  if (db) {
+    CursorProxy cp(db, 0);
+    if (unlikely(cp.cursor == 0))
+      return 0;
 
-  if (!share)
-    share = allocate_or_get_share();
-
-  std::string env_name = format_environment_name(name);
-
-  // create an Environment
-  assert(share->env == 0);
-
-  ups_env_t *env;
-  ups_status_t st = ups_env_create(&env, env_name.c_str(),
-                            UPS_ENABLE_TRANSACTIONS, 0644, 0);
-  if (st != 0) {
-    log_error("ups_env_create", st);
-    DBUG_RETURN(1);
+    ups_key_t key = ups_make_key(0, 0);
+    ups_status_t st = ups_cursor_move(cp.cursor, &key, 0, UPS_CURSOR_LAST);
+    if (st == 0) {
+      uint8_t *p = (uint8_t *)key.data;
+      if (key.size == 1)
+        return *p;
+      if (key.size == 2)
+        return *(uint16_t *)p;
+      if (key.size == 3)
+        return (p[0] << 16) | (p[1] << 8) | p[0];
+      if (key.size == 4)
+        return *(uint32_t *)p;
+      if (key.size == 8)
+        return *(uint64_t *)p;
+      assert(!"shouldn't be here");
+      return 0;
+    }
   }
 
-  ups_db_t *db;
+  // if the database is empty: read from the cached create_info object
+  CreateInfo *create_info = fetch_create_info(name);
+  if (create_info)
+    return create_info->autoinc_value - 1;
+  return 0;
+}
 
+static ups_status_t
+create_all_databases(ups_env_t *env, TABLE *table)
+{
   int num_indices = table->s->keys;
 
   // key info for the primary key
   std::pair<uint32_t, uint32_t> primary_type_info;
 
   // foreach indexed field: create a database which stores this index
-  int created = 0;
   KEY *key_info = table->key_info;
   for (int i = 0; i < num_indices; i++, key_info++) {
     Field *field = key_info->key_part->field;
@@ -612,31 +665,62 @@ UpscaledbHandler::create(const char *name, TABLE *table,
       p++;
     }
 
-    st = ups_env_create_db(env, &db, dbname(field), flags, params);
+    ups_db_t *db;
+    ups_status_t st = ups_env_create_db(env, &db, dbname(field), flags, params);
     if (unlikely(st != 0)) {
       log_error("ups_env_create_db", st);
-      ups_env_close(env, UPS_AUTO_CLEANUP);
-      DBUG_RETURN(1);
+      return st;
     }
-
-    created++;
   }
 
+  return 0;
+}
+
+// |name|: full qualified name, i.e. "/database/table"
+// |table|: table info, field definitions
+// |create_info|: additional information about client, connection etc
+int
+UpscaledbHandler::create(const char *name, TABLE *table,
+                HA_CREATE_INFO *create_info)
+{
+  DBUG_ENTER("UpscaledbHandler::create");
+
+  if (!share)
+    share = allocate_or_get_share();
+
+  std::string env_name = format_environment_name(name);
+
+  // create an Environment
+  assert(share->env == 0);
+
+  ups_env_t *env;
+  ups_status_t st = ups_env_create(&env, env_name.c_str(),
+                            UPS_ENABLE_TRANSACTIONS, 0644, 0);
+  if (st != 0) {
+    log_error("ups_env_create", st);
+    DBUG_RETURN(1);
+  }
+
+  ups_db_t *db;
+
+  int num_indices = table->s->keys;
+
+  // create a database for each index.
   // no indices at all? then create a record-number database
-  if (!created) {
+  if (num_indices > 0)
+    st = create_all_databases(env, table);
+  else
     st = ups_env_create_db(env, &db, 1, UPS_RECORD_NUMBER32, 0);
-    if (unlikely(st != 0)) {
-      log_error("ups_env_create_db", st);
-      ups_env_close(env, UPS_AUTO_CLEANUP);
-      DBUG_RETURN(1);
-    }
-  }
 
   // close Environment and all databases - it will be opened again in
   // open()
   (void)ups_env_close(env, UPS_AUTO_CLEANUP);
 
-  DBUG_RETURN(0);
+  // store the create_info object; might be required later
+  if (likely(st == 0))
+    store_create_info(name, new CreateInfo(create_info));
+
+  DBUG_RETURN(st ? 1 : 0);
 }
 
 int
@@ -705,6 +789,11 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     DbDesc dbdesc(db, field, enable_duplicates, is_primary_key);
     dbdesc.max_key_cache = initialize_max_key_cache(db, key_type);
     share->dbmap.push_back(dbdesc);
+
+    // is this an auto-increment field? if the database is filled then read
+    // the maximum value, otherwise initialize from the cached create_info 
+    if (field == table->found_next_number_field)
+      share->autoinc_value = initialize_autoinc(name, db);
   }
 
   // no indices at all? then there MUST be a record-number database
@@ -963,6 +1052,12 @@ UpscaledbHandler::write_row(uchar *buf)
     int rc = update_auto_increment();
     if (unlikely(rc))
       DBUG_RETURN(rc);
+    // if user changed the autoinc value ("SET INSERT_ID=10") then update the
+    // cached value
+    if (unlikely(next_insert_id != 0)) {
+      share->autoinc_value = next_insert_id - 1;
+      next_insert_id = 0;
+    }
   }
 
   // only one index? then use a temporary transaction
@@ -1539,6 +1634,16 @@ UpscaledbHandler::rnd_next(uchar *buf)
   DBUG_RETURN(rc);
 }
 
+// Returns an interval of reserved auto-increment values
+void
+UpscaledbHandler::get_auto_increment(ulonglong offset, ulonglong increment,
+                        ulonglong nb_desired_values, ulonglong *first_value,
+                        ulonglong *nb_reserved_values)
+{
+  *nb_reserved_values = ULLONG_MAX;
+  *first_value = ++share->autoinc_value;
+}
+
 // This function is used to perform a look-up on a secondary index. It
 // retrieves the primary key, and copies it into |ref|.
 void
@@ -1684,18 +1789,48 @@ int
 UpscaledbHandler::delete_all_rows()
 {
   DBUG_ENTER("UpscaledbHandler::delete_all_rows");
-  // not implemented; let the caller deal with this
-  DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+
+  ups_status_t st;
+
+  for (int index = 0; index < (int)share->dbmap.size(); index++) {
+    ups_db_t *db = share->dbmap[index].db;
+
+    // we have to close the database in order to drop it
+    st = ups_db_close(db, 0);
+    if (unlikely(st)) {
+      log_error("ups_db_close", st);
+      DBUG_RETURN(1);
+    }
+
+    // drop the database
+    st = ups_env_erase_db(share->env, dbname(share->dbmap[index].field), 0);
+    if (unlikely(st)) {
+      log_error("ups_env_erase_db", st);
+      DBUG_RETURN(1);
+    }
+  }
+
+  // now re-create all databases
+  st = create_all_databases(share->env, table);
+  if (unlikely(st)) {
+    log_error("create_all_databases", st);
+    DBUG_RETURN(1);
+  }
+
+  DBUG_RETURN(0);
 }
 
-// Track how often this is used; what's the difference to delete_all_rows()?
-// TODO TODO TODO
+// deletes all rows, initializes auto_increment state
 int
 UpscaledbHandler::truncate()
 {
   DBUG_ENTER("UpscaledbHandler::truncate");
-  // not implemented; let the caller deal with this
-  DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+  int err = delete_all_rows();
+  if (unlikely(err))
+    DBUG_RETURN(err);
+
+  share->autoinc_value = initialize_autoinc(table->alias, 0);
+  DBUG_RETURN(0);
 }
 
 // This create a lock on the table. If you are implementing a storage engine
@@ -1783,6 +1918,7 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   close();
 
   fetch_and_remove_env(from);
+  rename_create_info(from, to);
 
   std::string from_name = format_environment_name(from);
   std::string to_name = format_environment_name(to);
