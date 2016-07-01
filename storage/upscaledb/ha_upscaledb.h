@@ -61,21 +61,21 @@ struct DisabledMaxKeyCache : MaxKeyCache {
 
 struct DbDesc {
   DbDesc(ups_db_t *db_ = 0, Field *field_ = 0, bool enable_duplicates_ = false,
-                  bool is_primary_key_ = false)
+                  bool is_primary_index_ = false)
     : db(db_), field(field_), enable_duplicates(enable_duplicates_),
-      is_primary_key(is_primary_key_), max_key_cache(0) {
+      is_primary_index(is_primary_index_), max_key_cache(0) {
   }
 
   ups_db_t *db;
   Field *field;
   bool enable_duplicates; 
-  bool is_primary_key; 
+  bool is_primary_index; 
   MaxKeyCache *max_key_cache;
 };
 
 struct UpscaledbShare : public Handler_share {
   UpscaledbShare()
-    : env(0), autoinc_value(0) {
+    : env(0), initial_autoinc_value(0), autoinc_value(0) {
     thr_lock_init(&lock);
   }
 
@@ -93,6 +93,9 @@ struct UpscaledbShare : public Handler_share {
 
   // if no index is specified: create one
   DbDesc autoidx;
+
+  // initial AUTO_INCREMENT value
+  uint64_t initial_autoinc_value;
 
   // current AUTO_INCREMENT value
   uint64_t autoinc_value;
@@ -254,6 +257,9 @@ struct UpscaledbHandler : handler {
   virtual int analyze(THD *thd, HA_CHECK_OPT *check_opt) {
     return HA_ADMIN_OK;
   }
+
+  // Initializes a HA_CREATE_INFO structure (required for SHOW CREATE TABLE)
+  void update_create_info(HA_CREATE_INFO *create_info);
 
   void position(const uchar *record);                           ///< required
 

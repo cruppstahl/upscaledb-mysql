@@ -523,7 +523,7 @@ record_from_row(TABLE *table, uint8_t *buf, ByteVector &arena)
 static inline uint16_t
 dbname(Field *field)
 {
-  return field->field_index + 1;
+  return field->field_index + 2;
 }
 
 static inline bool
@@ -595,12 +595,60 @@ initialize_autoinc(const char *name, ups_db_t *db)
 }
 
 static ups_status_t
-create_all_databases(ups_env_t *env, TABLE *table)
+delete_all_databases(UpscaledbShare *share, TABLE *table)
 {
+  ups_status_t st;
+
+  if (share->autoidx.db) {
+    st = ups_db_close(share->autoidx.db, 0);
+    if (unlikely(st)) {
+      log_error("ups_db_close", st);
+      return 1;
+    }
+    share->autoidx.db = 0;
+
+    // drop the database
+    st = ups_env_erase_db(share->env, 1, 0);
+    if (unlikely(st)) {
+      log_error("ups_env_erase_db", st);
+      return 1;
+    }
+    share->autoidx = DbDesc();
+  }
+
+  for (int index = 0; index < (int)share->dbmap.size(); index++) {
+    ups_db_t *db = share->dbmap[index].db;
+
+    // we have to close the database in order to drop it
+    st = ups_db_close(db, 0);
+    if (unlikely(st)) {
+      log_error("ups_db_close", st);
+      return 1;
+    }
+
+    // drop the database
+    st = ups_env_erase_db(share->env, dbname(share->dbmap[index].field), 0);
+    if (unlikely(st)) {
+      log_error("ups_env_erase_db", st);
+      return 1;
+    }
+  }
+
+  share->dbmap.clear();
+
+  return 0;
+}
+
+static ups_status_t
+create_all_databases(UpscaledbShare *share, TABLE *table)
+{
+  ups_db_t *db;
   int num_indices = table->s->keys;
 
   // key info for the primary key
   std::pair<uint32_t, uint32_t> primary_type_info;
+
+  assert(share->dbmap.empty());
 
   // foreach indexed field: create a database which stores this index
   KEY *key_info = table->key_info;
@@ -665,12 +713,27 @@ create_all_databases(ups_env_t *env, TABLE *table)
       p++;
     }
 
-    ups_db_t *db;
-    ups_status_t st = ups_env_create_db(env, &db, dbname(field), flags, params);
+    ups_status_t st = ups_env_create_db(share->env, &db, dbname(field),
+                                flags, params);
     if (unlikely(st != 0)) {
       log_error("ups_env_create_db", st);
       return st;
     }
+
+    DbDesc dbdesc(db, field, enable_duplicates, is_primary_index);
+    dbdesc.max_key_cache = initialize_max_key_cache(db, key_type);
+    share->dbmap.push_back(dbdesc);
+  }
+
+  // no indices at all? then create a record-number database
+  if (num_indices == 0) {
+    ups_status_t st = ups_env_create_db(share->env, &db, 1,
+                                UPS_RECORD_NUMBER32, 0);
+    if (unlikely(st != 0)) {
+      log_error("ups_env_create_db", st);
+      return st;
+    }
+    share->autoidx = DbDesc(db, 0, false, true);
   }
 
   return 0;
@@ -693,28 +756,20 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   // create an Environment
   assert(share->env == 0);
 
-  ups_env_t *env;
-  ups_status_t st = ups_env_create(&env, env_name.c_str(),
+  UpscaledbShare tmpshare;
+  ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
                             UPS_ENABLE_TRANSACTIONS, 0644, 0);
   if (st != 0) {
     log_error("ups_env_create", st);
     DBUG_RETURN(1);
   }
 
-  ups_db_t *db;
-
-  int num_indices = table->s->keys;
-
   // create a database for each index.
-  // no indices at all? then create a record-number database
-  if (num_indices > 0)
-    st = create_all_databases(env, table);
-  else
-    st = ups_env_create_db(env, &db, 1, UPS_RECORD_NUMBER32, 0);
+  st = create_all_databases(&tmpshare, table);
 
   // close Environment and all databases - it will be opened again in
   // open()
-  (void)ups_env_close(env, UPS_AUTO_CLEANUP);
+  (void)ups_env_close(tmpshare.env, UPS_AUTO_CLEANUP);
 
   // store the create_info object; might be required later
   if (likely(st == 0))
@@ -792,8 +847,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
     // is this an auto-increment field? if the database is filled then read
     // the maximum value, otherwise initialize from the cached create_info 
-    if (field == table->found_next_number_field)
+    if (field == table->found_next_number_field) {
       share->autoinc_value = initialize_autoinc(name, db);
+      share->initial_autoinc_value = share->autoinc_value + 1;
+    }
   }
 
   // no indices at all? then there MUST be a record-number database
@@ -903,7 +960,7 @@ insert_multiple_indices(UpscaledbShare *share, TABLE *table, uint8_t *buf,
     (void)field;
 
     // is this the primary index?
-    if (share->dbmap[index].is_primary_key) {
+    if (share->dbmap[index].is_primary_index) {
       int rc = insert_primary_key(&share->dbmap[index], table, buf, txn,
                       key_arena, record_arena);
       if (unlikely(rc))
@@ -994,7 +1051,7 @@ delete_multiple_indices(UpscaledbShare *share, TABLE *table, const uint8_t *buf,
     (void)field;
 
     // is this the primary index?
-    if (share->dbmap[index].is_primary_key) {
+    if (share->dbmap[index].is_primary_index) {
       // TODO can we use |cursor|? no, because it's not part of the txn :-/
       assert(index == 0);
       st = ups_db_erase(share->dbmap[index].db, txnp.txn, &primary_key, 0);
@@ -1055,6 +1112,7 @@ UpscaledbHandler::write_row(uchar *buf)
     // if user changed the autoinc value ("SET INSERT_ID=10") then update the
     // cached value
     if (unlikely(next_insert_id != 0)) {
+      share->initial_autoinc_value = next_insert_id;
       share->autoinc_value = next_insert_id - 1;
       next_insert_id = 0;
     }
@@ -1644,6 +1702,20 @@ UpscaledbHandler::get_auto_increment(ulonglong offset, ulonglong increment,
   *first_value = ++share->autoinc_value;
 }
 
+void
+UpscaledbHandler::update_create_info(HA_CREATE_INFO *create_info)
+{
+  // called from ALTER TABLE ... AUTO_INCREMENT=XX? then don't overwrite
+  // the new value!
+  if (create_info->auto_increment_value > 0)
+    return;
+
+  if (unlikely(next_insert_id != 0))
+    create_info->auto_increment_value = next_insert_id;
+  else
+    create_info->auto_increment_value = share->initial_autoinc_value;
+}
+
 // This function is used to perform a look-up on a secondary index. It
 // retrieves the primary key, and copies it into |ref|.
 void
@@ -1767,6 +1839,9 @@ int
 UpscaledbHandler::info(uint flag)
 {
   DBUG_ENTER("UpscaledbHandler::info");
+
+  stats.auto_increment_value = share->initial_autoinc_value;
+
   DBUG_RETURN(0);
 }
 
@@ -1792,26 +1867,14 @@ UpscaledbHandler::delete_all_rows()
 
   ups_status_t st;
 
-  for (int index = 0; index < (int)share->dbmap.size(); index++) {
-    ups_db_t *db = share->dbmap[index].db;
 
-    // we have to close the database in order to drop it
-    st = ups_db_close(db, 0);
-    if (unlikely(st)) {
-      log_error("ups_db_close", st);
-      DBUG_RETURN(1);
-    }
-
-    // drop the database
-    st = ups_env_erase_db(share->env, dbname(share->dbmap[index].field), 0);
-    if (unlikely(st)) {
-      log_error("ups_env_erase_db", st);
-      DBUG_RETURN(1);
-    }
+  st = delete_all_databases(share, table);
+  if (unlikely(st)) {
+    log_error("delete_all_databases", st);
+    DBUG_RETURN(1);
   }
 
-  // now re-create all databases
-  st = create_all_databases(share->env, table);
+  st = create_all_databases(share, table);
   if (unlikely(st)) {
     log_error("create_all_databases", st);
     DBUG_RETURN(1);
@@ -1829,7 +1892,7 @@ UpscaledbHandler::truncate()
   if (unlikely(err))
     DBUG_RETURN(err);
 
-  share->autoinc_value = initialize_autoinc(table->alias, 0);
+  share->autoinc_value = share->initial_autoinc_value;
   DBUG_RETURN(0);
 }
 

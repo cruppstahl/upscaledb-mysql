@@ -354,30 +354,38 @@ o run more tests
     x engines/funcs.an_calendar
     x engines/funcs.an_string
     x engines/funcs.an_number
+    x engines/funcs.ai_init_create_table
+    x engines/funcs.ai_init_alter_table
 
-    o engines/funcs.ai_init_alter_table
-    o engines/funcs.ai_init_create_table
+    x fix regressions in run.sh!!
+
+    o engines/funcs.crash_manyindexes_number
+      -- does not create a primary key, but several KEYs. how to handle this?
+      -- will we create our own primary key (autoidx)? if yes then maybe
+      -- remove the autoidx member, and store our own as dbmap[0]. This
+      -- will simplify lots of code.
 
     o engines/funcs.crash_manyindexes_string
-    o engines/funcs.crash_manyindexes_number
 
     o engines/funcs.ai_reset_by_truncate
       -- requires truncate(); implemented, but frequently returns -22
 
     o engines/funcs.ai_sql_auto_is_null
       -- inserts NULL as auto-increment although column was created as NOT NULL
+      -- would have to convert the whole database to BINARY type :(
+      -- ignore this?
 
     o --suite=engines/iuds
 
 o investigate "item condition pushdown" - it helps with long table scans;
     basically it's the predicate filtering for non-indexed columns
 
+x implement UpscaledbHandler::delete_all_rows()
 o implement UpscaledbHandler::records_in_range()
 o implementint ha_heap::reset_auto_increment(ulonglong value)
 o implement UpscaledbHandler::records()
 o implement UpscaledbHandler::extra()
 o implement UpscaledbHandler::info()
-o implement UpscaledbHandler::delete_all_rows()
 o implement UpscaledbHandler::truncate()
 o implement all other missing functions
 
