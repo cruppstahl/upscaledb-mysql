@@ -644,6 +644,7 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
 {
   ups_db_t *db;
   int num_indices = table->s->keys;
+  bool has_primary_index = false;
 
   // key info for the primary key
   std::pair<uint32_t, uint32_t> primary_type_info;
@@ -666,6 +667,7 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
 
     if (0 == ::strcmp("PRIMARY", key_info->name)) {
       is_primary_index = true;
+      has_primary_index = true;
       primary_type_info = type_info;
     }
 
@@ -725,8 +727,8 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
     share->dbmap.push_back(dbdesc);
   }
 
-  // no indices at all? then create a record-number database
-  if (num_indices == 0) {
+  // no primary index? then create a record-number database
+  if (!has_primary_index) {
     ups_status_t st = ups_env_create_db(share->env, &db, 1,
                                 UPS_RECORD_NUMBER32, 0);
     if (unlikely(st != 0)) {
@@ -751,12 +753,14 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   if (!share)
     share = allocate_or_get_share();
 
-  std::string env_name = format_environment_name(name);
+  // clean up any remaining handles
+  fetch_and_remove_env(name);
 
   // create an Environment
   assert(share->env == 0);
 
   UpscaledbShare tmpshare;
+  std::string env_name = format_environment_name(name);
   ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
                             UPS_ENABLE_TRANSACTIONS, 0644, 0);
   if (st != 0) {
@@ -816,6 +820,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   ups_db_t *db;
 
   int num_indices = table->s->keys;
+  bool has_primary_index = false;
 
   // foreach indexed field: create a database which stores this index
   KEY *key_info = table->key_info;
@@ -825,8 +830,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
     bool is_primary_key = false;
     bool enable_duplicates = true;
-    if (0 == ::strcmp("PRIMARY", key_info->name))
+    if (0 == ::strcmp("PRIMARY", key_info->name)) {
       is_primary_key = true;
+      has_primary_index = true;
+    }
 
     if (key_info->actual_flags & HA_NOSAME)
       enable_duplicates = false;
@@ -853,8 +860,8 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     }
   }
 
-  // no indices at all? then there MUST be a record-number database
-  if (share->dbmap.empty()) {
+  // no primary index? then create a record-number database
+  if (!has_primary_index) {
     st = ups_env_open_db(share->env, &db, 1, 0, 0);
     if (unlikely(st != 0)) {
       log_error("ups_env_open_db", st);
@@ -880,16 +887,20 @@ UpscaledbHandler::close()
 
 static inline int
 insert_auto_index(UpscaledbShare *share, TABLE *table, uint8_t *buf,
-                ByteVector &arena)
+                ups_txn_t *txn, ByteVector &key_arena, ByteVector &record_arena)
 {
   ups_key_t key = ups_make_key(0, 0);
-  ups_record_t record = record_from_row(table, buf, arena);
+  ups_record_t record = record_from_row(table, buf, record_arena);
 
-  ups_status_t st = ups_db_insert(share->autoidx.db, 0, &key, &record, 0);
+  ups_status_t st = ups_db_insert(share->autoidx.db, txn, &key, &record, 0);
   if (unlikely(st != 0)) {
     log_error("ups_db_insert", st);
     return 1;
   }
+
+  // Need to copy the key in the ByteVector - it will be required later
+  key_arena.resize(key.size);
+  ::memcpy(key_arena.data(), key.data, key.size);
   return 0;
 }
 
@@ -917,17 +928,21 @@ insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
     log_error("ups_db_insert", st);
     return 1;
   }
+
+  // Need to copy the key in the ByteVector - it will be required later
+  key_arena.resize(key.size);
+  ::memcpy(key_arena.data(), key.data, key.size);
   return 0;
 }
 
 static inline int
 insert_secondary_key(DbDesc *dbdesc, TABLE *table, int index,
                 uint8_t *buf, ups_txn_t *txn, ByteVector &key_arena,
-                ByteVector &record_arena)
+                ByteVector &primary_key)
 {
   // The record of the secondary index is the primary key of the row
-  ups_key_t primary_key = key_from_row(table, buf, 0, record_arena);
-  ups_record_t record = ups_make_record(primary_key.data, primary_key.size);
+  ups_record_t record = ups_make_record(primary_key.data(),
+                  (uint16_t)primary_key.size());
 
   // The actual key is the column's value
   ups_key_t key = key_from_row(table, buf, index, key_arena);
@@ -954,22 +969,27 @@ static inline int
 insert_multiple_indices(UpscaledbShare *share, TABLE *table, uint8_t *buf,
                 ups_txn_t *txn, ByteVector &key_arena, ByteVector &record_arena)
 {
-  for (int index = 0; index < (int)share->dbmap.size(); index++) {
-    Field *field = share->dbmap[index].field;
-    assert(field->m_indexed == true && field->stored_in_db != false);
-    (void)field;
+  // is this an automatically generated index?
+  if (share->autoidx.db) {
+    int rc = insert_auto_index(share, table, buf, txn, key_arena, record_arena);
+    if (unlikely(rc))
+      return rc;
+  }
 
+  for (int index = 0; index < (int)share->dbmap.size(); index++) {
     // is this the primary index?
     if (share->dbmap[index].is_primary_index) {
+      assert(index == 0);
       int rc = insert_primary_key(&share->dbmap[index], table, buf, txn,
                       key_arena, record_arena);
       if (unlikely(rc))
         return rc;
     }
-    // is this a secondary index?
+    // is this a secondary index? the last parameter is a ByteVector with
+    // the primary key.
     else {
       int rc = insert_secondary_key(&share->dbmap[index], table, index,
-                      buf, txn, key_arena, record_arena);
+                      buf, txn, record_arena, key_arena);
       if (unlikely(rc))
         return rc;
     }
@@ -1034,8 +1054,8 @@ delete_from_secondary(ups_db_t *db, TABLE *table, int index, const uint8_t *buf,
 }
 
 static inline int
-delete_multiple_indices(UpscaledbShare *share, TABLE *table, const uint8_t *buf,
-                ByteVector &key_arena)
+delete_multiple_indices(ups_cursor_t *cursor, UpscaledbShare *share,
+                TABLE *table, const uint8_t *buf, ByteVector &key_arena)
 {
   ups_status_t st;
 
@@ -1043,7 +1063,21 @@ delete_multiple_indices(UpscaledbShare *share, TABLE *table, const uint8_t *buf,
   if (unlikely(!txnp.txn))
     return 1;
 
-  ups_key_t primary_key = key_from_row(table, buf, 0, key_arena);
+  ups_key_t primary_key;
+
+  // The cursor is positioned on the primary key. If the index was auto-
+  // generated then fetch the key, otherwise extract the key from |buf|
+  if (share->autoidx.db) {
+    st = ups_cursor_move(cursor, &primary_key, 0, 0);
+    if (unlikely(st != 0)) {
+      log_error("ups_cursor_erase", st);
+      return 1;
+    }
+  }
+  else {
+    ups_key_t key = key_from_row(table, buf, 0, key_arena);
+    primary_key = key;
+  }
 
   for (int index = 0; index < (int)share->dbmap.size(); index++) {
     Field *field = share->dbmap[index].field;
@@ -1102,7 +1136,8 @@ UpscaledbHandler::write_row(uchar *buf)
 
   // no index? then use the one which was automatically generated
   if (share->dbmap.empty())
-    DBUG_RETURN(insert_auto_index(share, table, buf, record_arena));
+    DBUG_RETURN(insert_auto_index(share, table, buf, 0,
+                            key_arena, record_arena));
 
   // auto-incremented index? then get a new value
   if (table->next_number_field && buf == table->record[0]) {
@@ -1119,7 +1154,7 @@ UpscaledbHandler::write_row(uchar *buf)
   }
 
   // only one index? then use a temporary transaction
-  if (share->dbmap.size() == 1)
+  if (share->dbmap.size() == 1 && !share->autoidx.db)
     DBUG_RETURN(insert_primary_key(&share->dbmap[0], table, buf, 0,
                             key_arena, record_arena));
 
@@ -1338,7 +1373,7 @@ UpscaledbHandler::delete_row(const uchar *buf)
 
   // otherwise (if there are multiple indices) then delete the key from
   // each index
-  int rc = delete_multiple_indices(share, table, buf, key_arena);
+  int rc = delete_multiple_indices(cursor, share, table, buf, key_arena);
   DBUG_RETURN(rc);
 }
 
@@ -1522,45 +1557,47 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
 int
 UpscaledbHandler::index_operation(uchar *buf, uint32_t flags)
 {
+  ups_status_t st;
+
   // when reading from the primary index: directly fetch record into |buf| 
   // if the row has fixed length
   ups_record_t record = ups_make_record(0, 0);
   if ((active_index == 0 || active_index == MAX_KEY)
-        && row_is_fixed_length(table)) {
+          && row_is_fixed_length(table)) {
     record.data = buf;
     record.flags = UPS_RECORD_USER_ALLOC;
   }
 
-  int rc = 0;
-  ups_status_t st = ups_cursor_move(cursor, 0, &record, flags);
+  st = ups_cursor_move(cursor, 0, &record, flags);
+  if (unlikely(st == UPS_KEY_NOT_FOUND))
+    return HA_ERR_END_OF_FILE;
+  if (unlikely(st != 0))
+    return HA_ERR_GENERIC;
 
-  // did we fetch from the primary index? then we have to unpack the record
-  if (likely(st == 0)) {
-    if ((active_index == 0 || active_index == MAX_KEY)
-          && !row_is_fixed_length(table))
-      record = unpack_record(table, &record, buf);
-
-    if (active_index != 0 && active_index != MAX_KEY) {
-      ups_key_t key = ups_make_key(record.data, (uint16_t)record.size);
-      ups_record_t rec = ups_make_record(0, 0);
-      if (row_is_fixed_length(table)) {
-        rec.data = buf;
-        rec.flags = UPS_RECORD_USER_ALLOC;
-      }
-      st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0);
-      if (unlikely(st != 0))
-        log_error("ups_db_find", st);
-      else if (!row_is_fixed_length(table))
-        rec = unpack_record(table, &rec, buf);
+  // if we fetched the record from a secondary index: lookup the actual row
+  // from the primary index
+  if (!share->dbmap.empty() && (active_index > 0 && active_index < MAX_KEY)) {
+    ups_key_t key = ups_make_key(record.data, (uint16_t)record.size);
+    ups_record_t rec = ups_make_record(0, 0);
+    if (row_is_fixed_length(table)) {
+      rec.data = buf;
+      rec.flags = UPS_RECORD_USER_ALLOC;
     }
+    st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0);
+    if (unlikely(st != 0)) {
+      log_error("ups_db_find", st);
+      return 1;
+    }
+
+    record.data = rec.data;
+    record.size = rec.size;
   }
 
-  if (unlikely(st == UPS_KEY_NOT_FOUND))
-    rc = HA_ERR_END_OF_FILE;
-  else if (unlikely(st != 0))
-    rc = HA_ERR_GENERIC;
+  // if necessary then unpack the row
+  if (!row_is_fixed_length(table))
+    unpack_record(table, &record, buf);
 
-  return rc;
+  return 0;
 }
 
 // Used to read forward through the index.
@@ -1649,10 +1686,8 @@ UpscaledbHandler::rnd_init(bool scan)
   if (cursor)
     ups_cursor_close(cursor);
 
-  ups_db_t *db;
-  if (share->dbmap.empty())
-    db = share->autoidx.db;
-  else
+  ups_db_t *db = share->autoidx.db;
+  if (!db)
     db = share->dbmap[0].db;
 
   ups_status_t st = ups_cursor_create(&cursor, db, 0, 0);
@@ -1769,33 +1804,53 @@ UpscaledbHandler::position(const uchar *buf)
 int
 UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
 {
+  ups_status_t st;
+
   DBUG_ENTER("UpscaledbHandler::rnd_pos");
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str,
                        TRUE);
 
+  assert(share != 0);
   assert(active_index == MAX_KEY);
 
-  if (!share)
-    share = allocate_or_get_share();
+  bool is_fixed_row_length = row_is_fixed_length(table);
 
+  // In some (hopefully rare - see engines/funcs/de_limit) cases, we have to
+  // perform a linear search through an auto-created index for the specific
+  // record. This happens when MySQL caches a list of rows, sorts them (i.e.
+  // b/c of an ORDER BY statement) and then updates or deletes them.
+  // TODO
+  // two options:
+  // 1) linear lookup by record (sucks)
+  // 2) treat "pos" as a position; find out where it's initialized, and store
+  //    the actual (recno) primary key instead of the row's value
+  //    (not sure if this is possible)
+  //    -> rnd_next(): read the key, not the record (if there is no primary
+  //            index, only an auto-incremented one)
+  //    -> in here: continue as usual
+  //    -> check for regressions
+  //
   ups_db_t *db = share->autoidx.db;
   if (!db)
     db = share->dbmap[0].db;
 
-  ups_key_t key = ups_make_key(pos, (uint16_t)table->key_info[0].key_length);
+  ups_key_t key = ups_make_key(pos,
+                        table->key_info
+                          ? (uint16_t)table->key_info[0].key_length
+                          : (uint16_t)sizeof(uint32_t)); // recno
 
   // when reading from the primary index: directly fetch record into |buf| 
   // if the row has fixed length
   ups_record_t rec = ups_make_record(0, 0);
-  if (row_is_fixed_length(table)) {
+  if (is_fixed_row_length) {
     rec.data = buf;
     rec.flags = UPS_RECORD_USER_ALLOC;
   }
 
-  ups_status_t st = ups_db_find(db, 0, &key, &rec, 0);
+  st = ups_db_find(db, 0, &key, &rec, 0);
 
   // did we fetch from the primary index? then we have to unpack the record
-  if (st == 0 && !row_is_fixed_length(table))
+  if (st == 0 && !is_fixed_row_length)
     rec = unpack_record(table, &rec, buf);
 
   int rc = 0;

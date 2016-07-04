@@ -359,34 +359,119 @@ o run more tests
 
     x fix regressions in run.sh!!
 
-    o engines/funcs.crash_manyindexes_number
-      -- does not create a primary key, but several KEYs. how to handle this?
-      -- will we create our own primary key (autoidx)? if yes then maybe
-      -- remove the autoidx member, and store our own as dbmap[0]. This
-      -- will simplify lots of code.
+    x engines/funcs.crash_manyindexes_number
+    x engines/funcs.crash_manyindexes_string
+    x engines/funcs.ai_reset_by_truncate
 
-    o engines/funcs.crash_manyindexes_string
-
-    o engines/funcs.ai_reset_by_truncate
-      -- requires truncate(); implemented, but frequently returns -22
-
-    o engines/funcs.ai_sql_auto_is_null
+    x engines/funcs.ai_sql_auto_is_null
       -- inserts NULL as auto-increment although column was created as NOT NULL
       -- would have to convert the whole database to BINARY type :(
-      -- ignore this?
+      -> ignore this
+
+    o engines/funcs.ai_reset_by_truncate
+      -- does not call truncate; why??
+    o engines/funcs.de_autoinc
+      -- assert in autoinc code
+    o engines/funcs.de_truncate_autoinc
+    o engines/funcs.de_limit
+      -- not sure how to fix this
+
+    o engines/funcs.de_multi_db_table
+    o engines/funcs.de_multi_db_table_using
+    o engines/funcs.de_multi_table
+    o engines/funcs.de_multi_table_using
+    o engines/funcs.in_calendar_2_unique_constraints_duplicate_update
+    o engines/funcs.in_calendar_pk_constraint_duplicate_update
+    o engines/funcs.in_calendar_pk_constraint_error
+    o engines/funcs.in_calendar_pk_constraint_ignore
+    o engines/funcs.in_calendar_unique_constraint_duplicate_update
+    o engines/funcs.in_calendar_unique_constraint_error
+    o engines/funcs.in_calendar_unique_constraint_ignore
+    o engines/funcs.in_insert_select_unique_violation
+    o engines/funcs.in_multicolumn_calendar_pk_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_calendar_pk_constraint_error
+    o engines/funcs.in_multicolumn_calendar_pk_constraint_ignore
+    o engines/funcs.in_multicolumn_calendar_unique_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_calendar_unique_constraint_error
+    o engines/funcs.in_multicolumn_calendar_unique_constraint_ignore
+    o engines/funcs.in_multicolumn_number_pk_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_number_pk_constraint_error
+    o engines/funcs.in_multicolumn_number_pk_constraint_ignore
+    o engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_number_unique_constraint_error
+    o engines/funcs.in_multicolumn_number_unique_constraint_ignore
+    o engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_string_pk_constraint_error
+    o engines/funcs.in_multicolumn_string_pk_constraint_ignore
+    o engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_string_unique_constraint_error
+    o engines/funcs.in_multicolumn_string_unique_constraint_ignore
+    o engines/funcs.in_number_2_unique_constraints_duplicate_update
+    o engines/funcs.in_number_pk_constraint_duplicate_update
+    o engines/funcs.in_number_pk_constraint_error
+    o engines/funcs.in_number_pk_constraint_ignore
+    o engines/funcs.in_number_unique_constraint_duplicate_update
+    o engines/funcs.in_number_unique_constraint_error
+    o engines/funcs.in_number_unique_constraint_ignore
+    o engines/funcs.in_string_2_unique_constraints_duplicate_update
+    o engines/funcs.in_string_pk_constraint_duplicate_update
+    o engines/funcs.in_string_pk_constraint_error
+    o engines/funcs.in_string_pk_constraint_ignore
+    o engines/funcs.in_string_unique_constraint_duplicate_update
+    o engines/funcs.in_string_unique_constraint_error
+    o engines/funcs.in_string_unique_constraint_ignore
+    o engines/funcs.ix_index_string_length
+    o engines/funcs.ld_less_columns
+    o engines/funcs.ld_more_columns_truncated
+    o engines/funcs.ld_unique_error1
+    o engines/funcs.ld_unique_error1_local
+    o engines/funcs.ld_unique_error2
+    o engines/funcs.ld_unique_error2_local
+    o engines/funcs.ld_unique_error3
+    o engines/funcs.ld_unique_error3_local
+    o engines/funcs.re_number_range
+    o engines/funcs.re_number_range_set
+    o engines/funcs.re_number_select
+    o engines/funcs.re_string_range
+    o engines/funcs.re_string_range_set
+    o engines/funcs.se_string_orderby
+    o engines/funcs.ta_orderby
+    o engines/funcs.tc_partition_analyze
+    o engines/funcs.tc_partition_change_from_range_to_hash_key
+    o engines/funcs.tc_partition_optimize
+    o engines/funcs.tc_partition_rebuild
+    o engines/funcs.tc_partition_remove
+    o engines/funcs.tc_partition_reorg_divide
+    o engines/funcs.tc_partition_reorg_hash_key
+    o engines/funcs.tc_partition_reorg_merge
+    o engines/funcs.tc_partition_repair
+    o engines/funcs.tc_partition_sub1
+    o engines/funcs.tc_partition_sub2
+    o engines/funcs.tc_rename_error
+    o engines/funcs.tc_temporary_column
+    o engines/funcs.tc_temporary_column_length
+    o engines/funcs.tr_all_type_triggers
+    o engines/funcs.tr_delete
+    o engines/funcs.tr_delete_new_error
+    o engines/funcs.tr_insert
+    o engines/funcs.tr_insert_after_error
+    o engines/funcs.tr_update
+    o engines/funcs.tr_update_after_error
+    o engines/funcs.up_limit
+    o engines/funcs.up_multi_db_table
+    o engines/funcs.up_multi_table
+
 
     o --suite=engines/iuds
 
-o investigate "item condition pushdown" - it helps with long table scans;
-    basically it's the predicate filtering for non-indexed columns
-
 x implement UpscaledbHandler::delete_all_rows()
+x implement UpscaledbHandler::truncate()
 o implement UpscaledbHandler::records_in_range()
 o implementint ha_heap::reset_auto_increment(ulonglong value)
-o implement UpscaledbHandler::records()
+o implement UpscaledbHandler::records() (does this make things faster??)
 o implement UpscaledbHandler::extra()
 o implement UpscaledbHandler::info()
-o implement UpscaledbHandler::truncate()
+o implement UpscaledbHandler::start_bulk_*() ???
 o implement all other missing functions
 
 o support additional flags
@@ -421,6 +506,33 @@ o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
     https://www.percona.com/forums/questions-discussions/mysql-and-percona-server/10501-help-with-tpcc-and-mysql
 
+o support encryption
+    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
+    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
+    using a cheap solution or an expensive one?
+
+o test and benchmark with wordpress
+o make sure that phpmyadmin runs fine
+
+o lots of documentation
+    o need samples, i.e. with java and php
+    o installation for various operating systems
+
+o second release (beta) --------------------------------------------------
+
+o stabilize/fix upcoming bugs
+o lots of PR
+o etc
+
+o public release ---------------------------------------------------------
+
+o secondary keys should not require a lookup of the primary key;
+    directly store the blob id of the record
+    -> look at BDB, they have a similar API
+
+o investigate "item condition pushdown" - it helps with long table scans;
+    basically it's the predicate filtering for non-indexed columns
+
 o check out code path of a SELECT statement; can we provide a shortcut, and
     use UQI transparently??
     x run sysbench with simple point SELECTs (--oltp-test-mode=simple)
@@ -441,25 +553,6 @@ o natively support transactions with BEGIN/COMMIT/ABORT
     o this already works, but can we use upscaledb's transaction
         implementation?
     o see mysql-tests/suite/engines/README (item #3) on how to test this
-
-o support encryption
-    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
-    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
-    using a cheap solution or an expensive one?
-
-o benchmark with wordpress
-
-o second release (beta) --------------------------------------------------
-
-o stabilize/fix upcoming bugs
-o lots of PR
-o etc
-
-o public release ---------------------------------------------------------
-
-o secondary keys should not require a lookup of the primary key;
-    directly store the blob id of the record
-    -> look at BDB, they have a similar API
 
 o when updating: re-use the cursor by temporarily attaching it to the
     current transaction (is that possible?)
