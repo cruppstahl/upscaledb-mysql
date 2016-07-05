@@ -149,7 +149,7 @@ store_env(const char *table_name, ups_env_t *env)
 }
 
 static inline void
-fetch_and_remove_env(const char *table_name)
+close_and_remove_env(const char *table_name)
 {
   boost::mutex::scoped_lock lock(environments_mutex);
   ups_env_t *env = environments[table_name];
@@ -200,7 +200,7 @@ upscaledb_init_func(void *p)
   handlerton *hton = (handlerton *)p;
   hton->state = SHOW_OPTION_YES;
   hton->create = upscaledb_create_handler;
-  hton->flags = HTON_CAN_RECREATE;
+  hton->flags = 0;
   hton->system_database = 0;
   hton->is_supported_system_table = 0;
 
@@ -560,8 +560,13 @@ initialize_max_key_cache(ups_db_t *db, uint32_t key_type)
 }
 
 static inline uint64_t
-initialize_autoinc(const char *name, ups_db_t *db)
+initialize_autoinc(const char *name, KEY_PART_INFO *key_part, ups_db_t *db)
 {
+  // if the database is empty: read from the cached create_info object
+  CreateInfo *create_info = fetch_create_info(name);
+  if (create_info)
+    return create_info->autoinc_value > 0 ? create_info->autoinc_value - 1 : 0;
+
   // if the database is not empty: read the maximum value
   if (db) {
     CursorProxy cp(db, 0);
@@ -572,25 +577,22 @@ initialize_autoinc(const char *name, ups_db_t *db)
     ups_status_t st = ups_cursor_move(cp.cursor, &key, 0, UPS_CURSOR_LAST);
     if (st == 0) {
       uint8_t *p = (uint8_t *)key.data;
-      if (key.size == 1)
+      // the auto-increment key is always at the beginning of |p|
+      if (key_part->length == 1)
         return *p;
-      if (key.size == 2)
+      if (key_part->length == 2)
         return *(uint16_t *)p;
-      if (key.size == 3)
+      if (key_part->length == 3)
         return (p[0] << 16) | (p[1] << 8) | p[0];
-      if (key.size == 4)
+      if (key_part->length == 4)
         return *(uint32_t *)p;
-      if (key.size == 8)
+      if (key_part->length == 8)
         return *(uint64_t *)p;
       assert(!"shouldn't be here");
       return 0;
     }
   }
 
-  // if the database is empty: read from the cached create_info object
-  CreateInfo *create_info = fetch_create_info(name);
-  if (create_info)
-    return create_info->autoinc_value - 1;
   return 0;
 }
 
@@ -598,43 +600,31 @@ static ups_status_t
 delete_all_databases(UpscaledbShare *share, TABLE *table)
 {
   ups_status_t st;
+  uint16_t names[1024];
+  uint32_t length = 1024;
+  st = ups_env_get_database_names(share->env, names, &length);
+  if (unlikely(st)) {
+    log_error("ups_env_get_database_names", st);
+    return 1;
+  }
 
   if (share->autoidx.db) {
-    st = ups_db_close(share->autoidx.db, 0);
-    if (unlikely(st)) {
-      log_error("ups_db_close", st);
-      return 1;
-    }
+    ups_db_close(share->autoidx.db, 0);
     share->autoidx.db = 0;
-
-    // drop the database
-    st = ups_env_erase_db(share->env, 1, 0);
-    if (unlikely(st)) {
-      log_error("ups_env_erase_db", st);
-      return 1;
-    }
-    share->autoidx = DbDesc();
   }
 
-  for (int index = 0; index < (int)share->dbmap.size(); index++) {
-    ups_db_t *db = share->dbmap[index].db;
-
-    // we have to close the database in order to drop it
-    st = ups_db_close(db, 0);
-    if (unlikely(st)) {
-      log_error("ups_db_close", st);
-      return 1;
-    }
-
-    // drop the database
-    st = ups_env_erase_db(share->env, dbname(share->dbmap[index].field), 0);
-    if (unlikely(st)) {
-      log_error("ups_env_erase_db", st);
-      return 1;
-    }
+  for (size_t i = 0; i < share->dbmap.size(); i++) {
+    ups_db_close(share->dbmap[i].db, 0);
   }
-
   share->dbmap.clear();
+
+  for (uint32_t i = 0; i < length; i++) {
+    st = ups_env_erase_db(share->env, names[i], 0);
+    if (unlikely(st)) {
+      log_error("ups_env_erase_db", st);
+      return 1;
+    }
+  }
 
   return 0;
 }
@@ -754,7 +744,7 @@ UpscaledbHandler::create(const char *name, TABLE *table,
     share = allocate_or_get_share();
 
   // clean up any remaining handles
-  fetch_and_remove_env(name);
+  close_and_remove_env(name);
 
   // create an Environment
   assert(share->env == 0);
@@ -797,6 +787,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   if (share->env != 0)
     DBUG_RETURN(0);
+  close_and_remove_env(name);
 
   std::string env_name = format_environment_name(name);
 
@@ -855,8 +846,14 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     // is this an auto-increment field? if the database is filled then read
     // the maximum value, otherwise initialize from the cached create_info 
     if (field == table->found_next_number_field) {
-      share->autoinc_value = initialize_autoinc(name, db);
-      share->initial_autoinc_value = share->autoinc_value + 1;
+      for (uint32_t k = 0; k < key_info->user_defined_key_parts; k++) {
+        if (key_info->key_part[k].field == field) {
+          share->autoinc_value = initialize_autoinc(name,
+                          &key_info->key_part[k], db);
+          share->initial_autoinc_value = share->autoinc_value + 1;
+          break;
+        }
+      }
     }
   }
 
@@ -1144,13 +1141,6 @@ UpscaledbHandler::write_row(uchar *buf)
     int rc = update_auto_increment();
     if (unlikely(rc))
       DBUG_RETURN(rc);
-    // if user changed the autoinc value ("SET INSERT_ID=10") then update the
-    // cached value
-    if (unlikely(next_insert_id != 0)) {
-      share->initial_autoinc_value = next_insert_id;
-      share->autoinc_value = next_insert_id - 1;
-      next_insert_id = 0;
-    }
   }
 
   // only one index? then use a temporary transaction
@@ -1733,8 +1723,9 @@ UpscaledbHandler::get_auto_increment(ulonglong offset, ulonglong increment,
                         ulonglong nb_desired_values, ulonglong *first_value,
                         ulonglong *nb_reserved_values)
 {
-  *nb_reserved_values = ULLONG_MAX;
-  *first_value = ++share->autoinc_value;
+  *nb_reserved_values = nb_desired_values;
+  *first_value = share->autoinc_value + 1;
+  share->autoinc_value += nb_desired_values;
 }
 
 void
@@ -1742,8 +1733,11 @@ UpscaledbHandler::update_create_info(HA_CREATE_INFO *create_info)
 {
   // called from ALTER TABLE ... AUTO_INCREMENT=XX? then don't overwrite
   // the new value!
-  if (create_info->auto_increment_value > 0)
+  if (create_info->auto_increment_value > 0) {
+    share->initial_autoinc_value = create_info->auto_increment_value;
+    share->autoinc_value = create_info->auto_increment_value;
     return;
+  }
 
   if (unlikely(next_insert_id != 0))
     create_info->auto_increment_value = next_insert_id;
@@ -1827,8 +1821,8 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
   //    (not sure if this is possible)
   //    -> rnd_next(): read the key, not the record (if there is no primary
   //            index, only an auto-incremented one)
-  //    -> in here: continue as usual
-  //    -> check for regressions
+  //    -> will not work b/c rnd_next() is expected to return the full row
+  // 3) ???
   //
   ups_db_t *db = share->autoidx.db;
   if (!db)
@@ -1895,7 +1889,8 @@ UpscaledbHandler::info(uint flag)
 {
   DBUG_ENTER("UpscaledbHandler::info");
 
-  stats.auto_increment_value = share->initial_autoinc_value;
+  if (flag & HA_STATUS_AUTO)
+    stats.auto_increment_value = share->initial_autoinc_value;
 
   DBUG_RETURN(0);
 }
@@ -1920,10 +1915,9 @@ UpscaledbHandler::delete_all_rows()
 {
   DBUG_ENTER("UpscaledbHandler::delete_all_rows");
 
-  ups_status_t st;
+  close(); // closes the cursor
 
-
-  st = delete_all_databases(share, table);
+  ups_status_t st = delete_all_databases(share, table);
   if (unlikely(st)) {
     log_error("delete_all_databases", st);
     DBUG_RETURN(1);
@@ -1938,7 +1932,7 @@ UpscaledbHandler::delete_all_rows()
   DBUG_RETURN(0);
 }
 
-// deletes all rows, initializes auto_increment state
+// deletes all rows
 int
 UpscaledbHandler::truncate()
 {
@@ -1947,7 +1941,8 @@ UpscaledbHandler::truncate()
   if (unlikely(err))
     DBUG_RETURN(err);
 
-  share->autoinc_value = share->initial_autoinc_value;
+  share->autoinc_value = 0;
+
   DBUG_RETURN(0);
 }
 
@@ -2018,7 +2013,7 @@ UpscaledbHandler::delete_table(const char *name)
   DBUG_ENTER("UpscaledbHandler::delete_table");
 
   // remove the environment from the global cache
-  fetch_and_remove_env(name);
+  close_and_remove_env(name);
 
   // delete all files
   std::string env_name = format_environment_name(name);
@@ -2035,7 +2030,7 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   DBUG_ENTER("UpscaledbHandler::rename_table ");
   close();
 
-  fetch_and_remove_env(from);
+  close_and_remove_env(from);
   rename_create_info(from, to);
 
   std::string from_name = format_environment_name(from);

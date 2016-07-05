@@ -367,12 +367,10 @@ o run more tests
       -- inserts NULL as auto-increment although column was created as NOT NULL
       -- would have to convert the whole database to BINARY type :(
       -> ignore this
+    x engines/funcs.de_truncate_autoinc
+    x engines/funcs.ai_reset_by_truncate
+    x engines/funcs.de_autoinc
 
-    o engines/funcs.ai_reset_by_truncate
-      -- does not call truncate; why??
-    o engines/funcs.de_autoinc
-      -- assert in autoinc code
-    o engines/funcs.de_truncate_autoinc
     o engines/funcs.de_limit
       -- not sure how to fix this
 
@@ -461,9 +459,6 @@ o run more tests
     o engines/funcs.up_multi_db_table
     o engines/funcs.up_multi_table
 
-
-    o --suite=engines/iuds
-
 x implement UpscaledbHandler::delete_all_rows()
 x implement UpscaledbHandler::truncate()
 o implement UpscaledbHandler::records_in_range()
@@ -495,6 +490,8 @@ o what if an index is created or a column with an index is dropped
     o add more tests with ALTER TABLE
 
 o temporary tables: automatically disable journalling
+    sql/table.cc:3313
+    db_stat & HA_OPEN_TEMPORARY ? HA_OPEN_TMP_TABLE ...
 
 o use upsserver to access the environment remotely
     o only if enabled in the configuration
@@ -505,11 +502,6 @@ o use upsserver to access the environment remotely
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
     https://www.percona.com/forums/questions-discussions/mysql-and-percona-server/10501-help-with-tpcc-and-mysql
-
-o support encryption
-    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
-    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
-    using a cheap solution or an expensive one?
 
 o test and benchmark with wordpress
 o make sure that phpmyadmin runs fine
@@ -523,6 +515,8 @@ o second release (beta) --------------------------------------------------
 o stabilize/fix upcoming bugs
 o lots of PR
 o etc
+o identify the 3 most commonly used MySQL operations in Wordpress; use
+    the API instead and see if it improves performance
 
 o public release ---------------------------------------------------------
 
@@ -556,6 +550,11 @@ o natively support transactions with BEGIN/COMMIT/ABORT
 
 o when updating: re-use the cursor by temporarily attaching it to the
     current transaction (is that possible?)
+
+o support encryption
+    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
+    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
+    using a cheap solution or an expensive one?
 
 o improve the performance for duplicate keys
     -> idea: split the duplicate table into smaller (linked) blobs; updating
