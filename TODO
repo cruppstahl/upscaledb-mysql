@@ -459,6 +459,25 @@ o run more tests
     o engines/funcs.up_multi_db_table
     o engines/funcs.up_multi_table
 
+o wordpress does not yet work
+    CREATE TABLE `wp_options` (
+  `option_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `option_name` varchar(64) NOT NULL DEFAULT '',
+  `option_value` longtext NOT NULL,
+  `autoload` varchar(20) NOT NULL DEFAULT 'yes',
+  PRIMARY KEY (`option_id`),
+  UNIQUE KEY `option_name` (`option_name`)
+) ENGINE=UPSCALEDB DEFAULT CHARSET=latin1 |
+
+UPDATE `wp_options` SET `option_value` =
+'a:2:{s:13:\"administrator\";a:2:{s:4:\"name\";s:13:\"Administrator\";s:12:\"capabilities\";a:0:{}}s:6:\"editor\";a:2:{s:4:\"name\";s:6:\"Editor\";s:12:\"capabilities\";a:0:{}}}'
+WHERE `option_name` = 'wp_user_roles'
+
+UPDATE `wp_options` SET `option_value` =
+'/index.php/%year%/%monthnum%/%day%/%postname%/' WHERE `option_name` =
+'permalink_structure'
+
+
 x implement UpscaledbHandler::delete_all_rows()
 x implement UpscaledbHandler::truncate()
 o implement UpscaledbHandler::records_in_range()
