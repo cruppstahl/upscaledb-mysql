@@ -371,10 +371,29 @@ o run more tests
     x engines/funcs.ai_reset_by_truncate
     x engines/funcs.de_autoinc
 
-    o engines/funcs.de_limit
-      -- not sure how to fix this
-
+=========================================================
     o engines/funcs.de_multi_db_table
+        DROP TABLE IF EXISTS t1;
+        DROP TABLE IF EXISTS t2;
+        CREATE TABLE t1 (c1 TINYINT NOT NULL PRIMARY KEY, c2 INTEGER, KEY(c2)) engine=upscaledb;
+        CREATE TABLE t2 (c1 TINYINT NOT NULL PRIMARY KEY, c2 INTEGER, KEY(c2)) engine=upscaledb;
+        INSERT INTO t1 VALUES(1,1),(2,2);
+        INSERT INTO t2 VALUES(11,1),(14,2);
+        DELETE t1, t2 FROM t1, t2 WHERE t1.c1=t2.c2;
+      -- both tables must be empty, but they're not.
+      -> do a step-by-step comparison vs innodb
+      -> if that's not successful: step through the whole DELETE code
+=========================================================
+
+    o engines/funcs.de_limit
+        DROP TABLE IF EXISTS t1; 
+        CREATE TABLE t1(c1 TINYINT NOT NULL) engine=upscaledb;
+        INSERT INTO t1 (c1) VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+        DELETE FROM t1 ORDER BY c1 LIMIT 2;
+        SELECT * FROM t1 ORDER BY c1;
+      -- ::position() needs to store the auto-generated primary key
+        in this->ref!
+
     o engines/funcs.de_multi_db_table_using
     o engines/funcs.de_multi_table
     o engines/funcs.de_multi_table_using
@@ -459,24 +478,7 @@ o run more tests
     o engines/funcs.up_multi_db_table
     o engines/funcs.up_multi_table
 
-o wordpress does not yet work
-    CREATE TABLE `wp_options` (
-  `option_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `option_name` varchar(64) NOT NULL DEFAULT '',
-  `option_value` longtext NOT NULL,
-  `autoload` varchar(20) NOT NULL DEFAULT 'yes',
-  PRIMARY KEY (`option_id`),
-  UNIQUE KEY `option_name` (`option_name`)
-) ENGINE=UPSCALEDB DEFAULT CHARSET=latin1 |
-
-UPDATE `wp_options` SET `option_value` =
-'a:2:{s:13:\"administrator\";a:2:{s:4:\"name\";s:13:\"Administrator\";s:12:\"capabilities\";a:0:{}}s:6:\"editor\";a:2:{s:4:\"name\";s:6:\"Editor\";s:12:\"capabilities\";a:0:{}}}'
-WHERE `option_name` = 'wp_user_roles'
-
-UPDATE `wp_options` SET `option_value` =
-'/index.php/%year%/%monthnum%/%day%/%postname%/' WHERE `option_name` =
-'permalink_structure'
-
+x wordpress does not yet work
 
 x implement UpscaledbHandler::delete_all_rows()
 x implement UpscaledbHandler::truncate()
@@ -538,6 +540,9 @@ o identify the 3 most commonly used MySQL operations in Wordpress; use
     the API instead and see if it improves performance
 
 o public release ---------------------------------------------------------
+
+. CREATE TABLE (id integer primary key) -> does not have to store any
+    records! (but it does)
 
 o secondary keys should not require a lookup of the primary key;
     directly store the blob id of the record

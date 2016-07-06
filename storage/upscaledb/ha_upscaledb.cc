@@ -780,6 +780,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   assert(share == 0);
   share = allocate_or_get_share();
   record_arena.resize(table->s->rec_buff_length);
+  ref_length = 0;
 
   ups_set_committed_flush_threshold(30);
 
@@ -824,6 +825,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     if (0 == ::strcmp("PRIMARY", key_info->name)) {
       is_primary_key = true;
       has_primary_index = true;
+      ref_length = table->key_info[0].key_length;
     }
 
     if (key_info->actual_flags & HA_NOSAME)
@@ -1323,14 +1325,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   if (unlikely(st != 0))
     DBUG_RETURN(1);
 
-  // |cursor| must point to the new key!
-  // TODO this could be optimized; we could use the cursor in
-  // |insert_multiple_indices|, but the cursor is not part of the current
-  // transaction!
-  assert(cursor && ups_cursor_get_database(cursor) == share->dbmap[0].db);
-  st = ups_cursor_find(cursor, &new_primary_key, 0, 0);
-
-  DBUG_RETURN(st == 0 ? 0 : 1);
+  DBUG_RETURN(0);
 }
 
 // This will delete a row. buf will contain a copy of the row to be deleted.
@@ -1430,6 +1425,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
     st = ups_cursor_move(cursor, 0, &record, UPS_CURSOR_FIRST);
   }
   else {
+    assert(active_index < MAX_KEY);
     KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
     uint32_t offset = 0;
     uint16_t key_size = (uint16_t)table->key_info[active_index].key_length;
@@ -1471,6 +1467,11 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
     if (unlikely(multi_part)) {
       keybuf = key_arena.data();
       key_size = (uint16_t)table->key_info[active_index].key_length;
+    }
+    // skip the null-byte
+    else if (key_part->null_bit) {
+      keybuf++;
+      key_size--;
     }
 
     ups_key_t key = ups_make_key((void *)keybuf, key_size);
@@ -1545,7 +1546,8 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
 }
 
 int
-UpscaledbHandler::index_operation(uchar *buf, uint32_t flags)
+UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
+                uchar *buf, uint32_t flags)
 {
   ups_status_t st;
 
@@ -1558,7 +1560,20 @@ UpscaledbHandler::index_operation(uchar *buf, uint32_t flags)
     record.flags = UPS_RECORD_USER_ALLOC;
   }
 
-  st = ups_cursor_move(cursor, 0, &record, flags);
+  if (flags == 0) {
+    // skip the null-byte
+    KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
+    if (key_part->null_bit) {
+      keybuf++;
+      keylen--;
+    }
+    ups_key_t key = ups_make_key((void *)keybuf, (uint16_t)keylen);
+    st = ups_cursor_find(cursor, &key, &record, 0);
+  }
+  else {
+    st = ups_cursor_move(cursor, 0, &record, flags);
+  }
+
   if (unlikely(st == UPS_KEY_NOT_FOUND))
     return HA_ERR_END_OF_FILE;
   if (unlikely(st != 0))
@@ -1573,7 +1588,7 @@ UpscaledbHandler::index_operation(uchar *buf, uint32_t flags)
       rec.data = buf;
       rec.flags = UPS_RECORD_USER_ALLOC;
     }
-    st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0);
+    st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0); // or autoidx.db??
     if (unlikely(st != 0)) {
       log_error("ups_db_find", st);
       return 1;
@@ -1597,7 +1612,7 @@ UpscaledbHandler::index_next(uchar *buf)
   DBUG_ENTER("UpscaledbHandler::index_next");
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str, TRUE);
 
-  int rc = index_operation(buf, UPS_CURSOR_NEXT);
+  int rc = index_operation(0, 0, buf, UPS_CURSOR_NEXT);
 
   MYSQL_READ_ROW_DONE(rc);
   DBUG_RETURN(rc);
@@ -1610,7 +1625,7 @@ UpscaledbHandler::index_prev(uchar *buf)
   DBUG_ENTER("UpscaledbHandler::index_prev");
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str, TRUE);
 
-  int rc = index_operation(buf, UPS_CURSOR_PREVIOUS);
+  int rc = index_operation(0, 0, buf, UPS_CURSOR_PREVIOUS);
 
   MYSQL_READ_ROW_DONE(rc);
   DBUG_RETURN(rc);
@@ -1622,7 +1637,7 @@ UpscaledbHandler::index_first(uchar *buf)
 {
   DBUG_ENTER("UpscaledbHandler::index_first");
 
-  int rc = index_operation(buf, UPS_CURSOR_FIRST);
+  int rc = index_operation(0, 0, buf, UPS_CURSOR_FIRST);
 
   MYSQL_READ_ROW_DONE(rc);
   MYSQL_INDEX_READ_ROW_DONE(rc);
@@ -1635,7 +1650,7 @@ UpscaledbHandler::index_last(uchar *buf)
 {
   DBUG_ENTER("UpscaledbHandler::index_last");
 
-  int rc = index_operation(buf, UPS_CURSOR_LAST);
+  int rc = index_operation(0, 0, buf, UPS_CURSOR_LAST);
 
   MYSQL_READ_ROW_DONE(rc);
   MYSQL_INDEX_READ_ROW_DONE(rc);
@@ -1644,7 +1659,7 @@ UpscaledbHandler::index_last(uchar *buf)
 
 // Moves the cursor to the next row with the specified key
 int
-UpscaledbHandler::index_next_same(uchar *buf, const uchar *key, uint keylen)
+UpscaledbHandler::index_next_same(uchar *buf, const uchar *keybuf, uint keylen)
 {
   DBUG_ENTER("UpscaledbHandler::index_next_same");
 
@@ -1652,10 +1667,15 @@ UpscaledbHandler::index_next_same(uchar *buf, const uchar *key, uint keylen)
 
   if (first_call_after_position) {
     first_call_after_position = false;
-    rc = index_operation(buf, 0);
+
+    // locate the first key
+    rc = index_operation((uchar *)keybuf, keylen, buf, 0);
+    // and immediately try to move to the next key
+    if (likely(rc == 0))
+      rc = index_operation(0, 0, buf, UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
   }
   else {
-    rc = index_operation(buf, UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
+    rc = index_operation(0, 0, buf, UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
   }
 
   MYSQL_READ_ROW_DONE(rc);
@@ -1711,7 +1731,7 @@ UpscaledbHandler::rnd_next(uchar *buf)
   DBUG_ENTER("UpscaledbHandler::rnd_next");
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str, TRUE);
 
-  int rc = index_operation(buf, UPS_CURSOR_NEXT);
+  int rc = index_operation(0, 0, buf, UPS_CURSOR_NEXT);
 
   MYSQL_READ_ROW_DONE(rc);
   DBUG_RETURN(rc);
@@ -1751,41 +1771,32 @@ void
 UpscaledbHandler::position(const uchar *buf)
 {
   DBUG_ENTER("UpscaledbHandler::position");
-  // fetch primary key with |cursor|, which was already initialized, and
-  // store it in |ref|
-  assert(cursor != 0);
 
-  ups_key_t key = key_from_row(table, buf, active_index, key_arena);
-
-  // Same key as in the last call? then return immediately (otherwise
-  // ups_cursor_find would reset the cursor to the first duplicate, and the
-  // following call to UpscaledbHandler::index_next_same() would always
-  // return the same row)
-  if (key.size == last_position_key.size()
-        && !::memcmp(key.data, &last_position_key[0], key.size))
-    DBUG_VOID_RETURN;
-
-  // otherwise keep a copy of the last key
-  last_position_key.resize(key.size);
-  ::memcpy(&last_position_key[0], key.data, key.size);
-
-  // and continue with the lookup
-  ups_record_t record = ups_make_record(0, 0);
-
-  ups_status_t st = ups_cursor_find(cursor, &key, &record, 0);
-  if (unlikely(st != 0)) {
-    log_error("ups_cursor_find", st);
-    DBUG_VOID_RETURN;
-  }
-
+  // No need to store the position if we're already working on the primary
+  // index 
   if (active_index == 0 || active_index == MAX_KEY)
     DBUG_VOID_RETURN;
 
-  // The tokudb comment says that unused bytes have to be cleared with zeroes
-  assert(ref_length >= record.size);
-  if (ref_length > record.size)
-    ::memset(ref + record.size, 0, ref_length - record.size);
-  ::memcpy(ref, record.data, record.size);
+  assert(share->autoidx.db == 0); // not yet implemented
+
+  // Store the PRIMARY key as the reference in |ref|
+  KEY *key_info = table->key_info;
+  assert(ref_length == key_info->key_length);
+  key_copy(ref, (uchar *)buf, key_info, key_info->key_length);
+
+  // Same (index) key as in the last call? then return immediately (otherwise
+  // ups_cursor_find would reset the cursor to the first duplicate, and the
+  // following call to UpscaledbHandler::index_next_same() would always
+  // return the same row)
+  ups_key_t key = key_from_row(table, buf, active_index, key_arena);
+  if (key.size == last_position_key.size()
+        && !::memcmp(key.data, last_position_key.data(), key.size))
+    DBUG_VOID_RETURN;
+
+  // otherwise store a copy of the last key
+  last_position_key.resize(key.size);
+  ::memcpy(last_position_key.data(), key.data, key.size);
+
   first_call_after_position = true;
 
   DBUG_VOID_RETURN;
@@ -1808,6 +1819,8 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
   assert(active_index == MAX_KEY);
 
   bool is_fixed_row_length = row_is_fixed_length(table);
+  ups_record_t rec = ups_make_record(0, 0);
+  ups_key_t key = ups_make_key(0, 0);
 
   // In some (hopefully rare - see engines/funcs/de_limit) cases, we have to
   // perform a linear search through an auto-created index for the specific
@@ -1825,17 +1838,41 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
   // 3) ???
   //
   ups_db_t *db = share->autoidx.db;
+#if 0
+  if (db) {
+    // TODO print a log message!?
+    ups_record_t posrec = record_from_row(table, pos, record_arena);
+    st = ups_cursor_move(cursor, &key, &rec, UPS_CURSOR_FIRST);
+    if (unlikely(st != 0))
+      goto bail;
+    do {
+      // compare the row data
+      if (rec.size == posrec.size) {
+        uint8_t *lhs = (uint8_t *)rec.data;
+        lhs += table->s->null_bytes;
+        uint8_t *rhs = (uint8_t *)posrec.data;
+        rhs += table->s->null_bytes;
+        if (!::memcmp(lhs, rhs, rec.size - table->s->null_bytes)) {
+          ::memcpy(buf, rec.data, rec.size);
+          goto bail;
+        }
+      }
+    } while ((st = ups_cursor_move(cursor, &key, &rec, UPS_CURSOR_NEXT))
+                    == 0);
+    goto bail;
+  }
+#endif
+
   if (!db)
     db = share->dbmap[0].db;
 
-  ups_key_t key = ups_make_key(pos,
-                        table->key_info
-                          ? (uint16_t)table->key_info[0].key_length
-                          : (uint16_t)sizeof(uint32_t)); // recno
+  key.data = pos;
+  key.size = table->key_info
+                ? (uint16_t)table->key_info[0].key_length
+                : (uint16_t)sizeof(uint32_t); // recno
 
   // when reading from the primary index: directly fetch record into |buf| 
   // if the row has fixed length
-  ups_record_t rec = ups_make_record(0, 0);
   if (is_fixed_row_length) {
     rec.data = buf;
     rec.flags = UPS_RECORD_USER_ALLOC;
@@ -1847,6 +1884,7 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
   if (st == 0 && !is_fixed_row_length)
     rec = unpack_record(table, &rec, buf);
 
+//bail:
   int rc = 0;
   if (unlikely(st == UPS_KEY_NOT_FOUND))
     rc = HA_ERR_END_OF_FILE;

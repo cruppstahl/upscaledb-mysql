@@ -210,7 +210,10 @@ struct UpscaledbHandler : handler {
 
   // Helper function which moves the cursor in the direction specified in
   // |flags|, and retrieves the row
-  int index_operation(uchar *buf, uint32_t flags);
+  // If flags is 0 then will perform a lookup for |keybuf|, otherwise
+  // |keybuf| and |keylen| are ignored
+  int index_operation(uchar *keybuf, uint32_t keylen, uchar *buf,
+                  uint32_t flags);
 
   // Positions an index cursor to the index specified in the handle. Fetches the
   // row if available. If the key value is null, begin at the first key of the
