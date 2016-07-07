@@ -370,20 +370,10 @@ o run more tests
     x engines/funcs.de_truncate_autoinc
     x engines/funcs.ai_reset_by_truncate
     x engines/funcs.de_autoinc
-
-=========================================================
-    o engines/funcs.de_multi_db_table
-        DROP TABLE IF EXISTS t1;
-        DROP TABLE IF EXISTS t2;
-        CREATE TABLE t1 (c1 TINYINT NOT NULL PRIMARY KEY, c2 INTEGER, KEY(c2)) engine=upscaledb;
-        CREATE TABLE t2 (c1 TINYINT NOT NULL PRIMARY KEY, c2 INTEGER, KEY(c2)) engine=upscaledb;
-        INSERT INTO t1 VALUES(1,1),(2,2);
-        INSERT INTO t2 VALUES(11,1),(14,2);
-        DELETE t1, t2 FROM t1, t2 WHERE t1.c1=t2.c2;
-      -- both tables must be empty, but they're not.
-      -> do a step-by-step comparison vs innodb
-      -> if that's not successful: step through the whole DELETE code
-=========================================================
+    x engines/funcs.de_multi_db_table
+    x engines/funcs.de_multi_db_table_using
+    x engines/funcs.de_multi_table
+    x engines/funcs.de_multi_table_using
 
     o engines/funcs.de_limit
         DROP TABLE IF EXISTS t1; 
@@ -394,9 +384,6 @@ o run more tests
       -- ::position() needs to store the auto-generated primary key
         in this->ref!
 
-    o engines/funcs.de_multi_db_table_using
-    o engines/funcs.de_multi_table
-    o engines/funcs.de_multi_table_using
     o engines/funcs.in_calendar_2_unique_constraints_duplicate_update
     o engines/funcs.in_calendar_pk_constraint_duplicate_update
     o engines/funcs.in_calendar_pk_constraint_error

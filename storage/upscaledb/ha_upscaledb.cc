@@ -867,6 +867,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
       DBUG_RETURN(1);
     }
 
+    ref_length = sizeof(uint32_t);
     share->autoidx = DbDesc(db, 0, false, true);
   }
 
@@ -1115,6 +1116,27 @@ are_keys_equal(ups_key_t *lhs, ups_key_t *rhs)
   if (lhs->size != rhs->size)
     return false;
   return 0 == ::memcmp(lhs->data, rhs->data, lhs->size);
+}
+
+static inline int
+ups_status_to_error(TABLE *table, const char *msg, ups_status_t st)
+{
+  if (likely(st == 0)) {
+    table->status = 0;
+    return 0;
+  }
+
+  if (st == UPS_KEY_NOT_FOUND) {
+    table->status = STATUS_NOT_FOUND;
+    return HA_ERR_END_OF_FILE;
+  }
+  if (st == UPS_DUPLICATE_KEY) {
+    table->status = STATUS_NOT_FOUND;
+    return HA_ERR_FOUND_DUPP_KEY;
+  }
+
+  log_error(msg, st);
+  return HA_ERR_GENERIC;
 }
 
 // write_row() inserts a row. No extra() hint is given currently if a bulk load
@@ -1521,7 +1543,6 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
   // is this a secondary index? then use the primary key (in the record)
   // to fetch the row
   // TODO move this to a separate function
-  int rc = 0;
   if (st == 0 && active_index != 0 && active_index != MAX_KEY) {
     ups_key_t key = ups_make_key(record.data, (uint16_t)record.size);
     ups_record_t rec = ups_make_record(0, 0);
@@ -1530,16 +1551,11 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
       rec.flags = UPS_RECORD_USER_ALLOC;
     }
     st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0);
-    if (unlikely(st != 0))
-      log_error("ups_db_find", st);
-    else if (!row_is_fixed_length(table))
+    if (likely(st == 0) && !row_is_fixed_length(table))
       rec = unpack_record(table, &rec, buf);
   }
 
-  if (unlikely(st == UPS_KEY_NOT_FOUND))
-    rc = HA_ERR_END_OF_FILE;
-  else if (unlikely(st != 0))
-    rc = HA_ERR_GENERIC;
+  int rc = ups_status_to_error(table, "ups_db_find", st);
 
   MYSQL_INDEX_READ_ROW_DONE(rc);
   DBUG_RETURN(rc);
@@ -1574,10 +1590,8 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
     st = ups_cursor_move(cursor, 0, &record, flags);
   }
 
-  if (unlikely(st == UPS_KEY_NOT_FOUND))
-    return HA_ERR_END_OF_FILE;
   if (unlikely(st != 0))
-    return HA_ERR_GENERIC;
+    goto bail;
 
   // if we fetched the record from a secondary index: lookup the actual row
   // from the primary index
@@ -1589,10 +1603,8 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
       rec.flags = UPS_RECORD_USER_ALLOC;
     }
     st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0); // or autoidx.db??
-    if (unlikely(st != 0)) {
-      log_error("ups_db_find", st);
-      return 1;
-    }
+    if (unlikely(st != 0))
+      goto bail;
 
     record.data = rec.data;
     record.size = rec.size;
@@ -1602,7 +1614,8 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
   if (!row_is_fixed_length(table))
     unpack_record(table, &record, buf);
 
-  return 0;
+bail:
+  return ups_status_to_error(table, "ups_cursor_move", st);
 }
 
 // Used to read forward through the index.
@@ -1772,11 +1785,6 @@ UpscaledbHandler::position(const uchar *buf)
 {
   DBUG_ENTER("UpscaledbHandler::position");
 
-  // No need to store the position if we're already working on the primary
-  // index 
-  if (active_index == 0 || active_index == MAX_KEY)
-    DBUG_VOID_RETURN;
-
   assert(share->autoidx.db == 0); // not yet implemented
 
   // Store the PRIMARY key as the reference in |ref|
@@ -1788,7 +1796,8 @@ UpscaledbHandler::position(const uchar *buf)
   // ups_cursor_find would reset the cursor to the first duplicate, and the
   // following call to UpscaledbHandler::index_next_same() would always
   // return the same row)
-  ups_key_t key = key_from_row(table, buf, active_index, key_arena);
+  ups_key_t key = key_from_row(table, buf,
+                        active_index == MAX_KEY ? 0 : active_index, key_arena);
   if (key.size == last_position_key.size()
         && !::memcmp(key.data, last_position_key.data(), key.size))
     DBUG_VOID_RETURN;
