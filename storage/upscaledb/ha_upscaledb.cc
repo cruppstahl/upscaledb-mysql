@@ -1587,7 +1587,16 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
     st = ups_cursor_find(cursor, &key, &record, 0);
   }
   else {
-    st = ups_cursor_move(cursor, 0, &record, flags);
+    // if we fetched the record from an auto-generated index then store the
+    // row id; it will be required in ::position()
+    if (share->autoidx.db != 0) {
+      ups_key_t key = ups_make_key(&recno_row_id, sizeof(recno_row_id));
+      key.flags = UPS_KEY_USER_ALLOC;
+      st = ups_cursor_move(cursor, &key, &record, flags);
+    }
+    else {
+      st = ups_cursor_move(cursor, 0, &record, flags);
+    }
   }
 
   if (unlikely(st != 0))
@@ -1785,7 +1794,13 @@ UpscaledbHandler::position(const uchar *buf)
 {
   DBUG_ENTER("UpscaledbHandler::position");
 
-  assert(share->autoidx.db == 0); // not yet implemented
+  // Auto-generated index? Then store the internal row-id (which is a 32bit
+  // record number)
+  if (share->autoidx.db != 0) {
+    assert(ref_length == sizeof(uint32_t));
+    *(uint32_t *)ref = recno_row_id;
+    DBUG_VOID_RETURN;
+  }
 
   // Store the PRIMARY key as the reference in |ref|
   KEY *key_info = table->key_info;
@@ -1831,47 +1846,7 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
   ups_record_t rec = ups_make_record(0, 0);
   ups_key_t key = ups_make_key(0, 0);
 
-  // In some (hopefully rare - see engines/funcs/de_limit) cases, we have to
-  // perform a linear search through an auto-created index for the specific
-  // record. This happens when MySQL caches a list of rows, sorts them (i.e.
-  // b/c of an ORDER BY statement) and then updates or deletes them.
-  // TODO
-  // two options:
-  // 1) linear lookup by record (sucks)
-  // 2) treat "pos" as a position; find out where it's initialized, and store
-  //    the actual (recno) primary key instead of the row's value
-  //    (not sure if this is possible)
-  //    -> rnd_next(): read the key, not the record (if there is no primary
-  //            index, only an auto-incremented one)
-  //    -> will not work b/c rnd_next() is expected to return the full row
-  // 3) ???
-  //
   ups_db_t *db = share->autoidx.db;
-#if 0
-  if (db) {
-    // TODO print a log message!?
-    ups_record_t posrec = record_from_row(table, pos, record_arena);
-    st = ups_cursor_move(cursor, &key, &rec, UPS_CURSOR_FIRST);
-    if (unlikely(st != 0))
-      goto bail;
-    do {
-      // compare the row data
-      if (rec.size == posrec.size) {
-        uint8_t *lhs = (uint8_t *)rec.data;
-        lhs += table->s->null_bytes;
-        uint8_t *rhs = (uint8_t *)posrec.data;
-        rhs += table->s->null_bytes;
-        if (!::memcmp(lhs, rhs, rec.size - table->s->null_bytes)) {
-          ::memcpy(buf, rec.data, rec.size);
-          goto bail;
-        }
-      }
-    } while ((st = ups_cursor_move(cursor, &key, &rec, UPS_CURSOR_NEXT))
-                    == 0);
-    goto bail;
-  }
-#endif
-
   if (!db)
     db = share->dbmap[0].db;
 
@@ -1887,20 +1862,13 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
     rec.flags = UPS_RECORD_USER_ALLOC;
   }
 
-  st = ups_db_find(db, 0, &key, &rec, 0);
+  st = ups_cursor_find(cursor, &key, &rec, 0);
 
   // did we fetch from the primary index? then we have to unpack the record
   if (st == 0 && !is_fixed_row_length)
     rec = unpack_record(table, &rec, buf);
 
-//bail:
-  int rc = 0;
-  if (unlikely(st == UPS_KEY_NOT_FOUND))
-    rc = HA_ERR_END_OF_FILE;
-  else if (unlikely(st != 0)) {
-    log_error("ups_db_find", st);
-    rc = HA_ERR_GENERIC;
-  }
+  int rc = ups_status_to_error(table, "ups_cursor_find", st);
 
   MYSQL_READ_ROW_DONE(rc);
   DBUG_RETURN(rc);

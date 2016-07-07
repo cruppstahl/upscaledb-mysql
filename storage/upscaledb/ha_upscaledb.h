@@ -105,7 +105,7 @@ struct UpscaledbHandler : handler {
   // Constructor
   UpscaledbHandler(handlerton *hton, TABLE_SHARE *table_arg)
     : handler(hton, table_arg), share(0), cursor(0),
-      first_call_after_position(false) {
+      first_call_after_position(false), recno_row_id(0) {
   }
 
   // The name that will be used for display purposes.
@@ -127,7 +127,8 @@ struct UpscaledbHandler : handler {
   // This is a list of flags that indicate what functionality the storage engine
   // implements. The current table flags are documented in handler.h.
   ulonglong table_flags() const {
-    return HA_NO_TRANSACTIONS
+    return HA_REC_NOT_IN_SEQ
+            | HA_NO_TRANSACTIONS
             | HA_TABLE_SCAN_ON_INDEX
             | HA_CAN_INDEX_BLOBS    // blobs can be indexed
             | HA_PRIMARY_KEY_IN_READ_INDEX
@@ -328,4 +329,7 @@ struct UpscaledbHandler : handler {
   // A memory buffer, to avoid frequent memory allocations
   ByteVector key_arena;
   ByteVector record_arena;
+
+  // For storing the record number id of a row
+  uint32_t recno_row_id;
 };
