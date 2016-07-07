@@ -477,10 +477,9 @@ pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
             || type == MYSQL_TYPE_BLOB
             || type == MYSQL_TYPE_MEDIUM_BLOB
             || type == MYSQL_TYPE_LONG_BLOB) {
-      // found this in ha_tina.cc
-      Field_blob *blob = *(Field_blob **)field;
-      uint32_t packlength = blob->pack_length_no_ptr();
-      uint32_t length = blob->get_length(blob->ptr);
+      uint32_t packlength;
+      uint32_t length;
+      extract_varchar_field_info(*field, &packlength, &length, src);
 
       // make sure we have sufficient space
       uint32_t pos = dst - arena.data();
@@ -489,9 +488,9 @@ pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
 
       *(uint32_t *)dst = length;
       dst += sizeof(uint32_t);
-      ::memcpy(dst, *(char **)(blob->ptr + packlength), length);
+      ::memcpy(dst, *(char **)(src + packlength), length);
       dst += length;
-      src += (*field)->pack_length();
+      src += packlength + sizeof(void *);
       continue;
     }
 
@@ -645,7 +644,6 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
   KEY *key_info = table->key_info;
   for (int i = 0; i < num_indices; i++, key_info++) {
     Field *field = key_info->key_part->field;
-    assert(field->m_indexed == true && field->stored_in_db == true);
 
     std::pair<uint32_t, uint32_t> type_info;
     type_info = table_key_info(key_info);
@@ -814,11 +812,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   int num_indices = table->s->keys;
   bool has_primary_index = false;
 
-  // foreach indexed field: create a database which stores this index
+  // foreach indexed field: open the database which stores this index
   KEY *key_info = table->key_info;
   for (int i = 0; i < num_indices; i++, key_info++) {
     Field *field = key_info->key_part->field;
-    assert(field->m_indexed == true && field->stored_in_db == true);
 
     bool is_primary_key = false;
     bool enable_duplicates = true;
@@ -1150,6 +1147,8 @@ UpscaledbHandler::write_row(uchar *buf)
 {
   ups_status_t st;
 
+  duplicate_error_index = (uint32_t)-1;
+
   DBUG_ENTER("UpscaledbHandler::write_row");
 
   if (unlikely(!share))
@@ -1168,9 +1167,14 @@ UpscaledbHandler::write_row(uchar *buf)
   }
 
   // only one index? then use a temporary transaction
-  if (share->dbmap.size() == 1 && !share->autoidx.db)
-    DBUG_RETURN(insert_primary_key(&share->dbmap[0], table, buf, 0,
-                            key_arena, record_arena));
+  if (share->dbmap.size() == 1 && !share->autoidx.db) {
+    int rc = insert_primary_key(&share->dbmap[0], table, buf, 0,
+                            key_arena, record_arena);
+    if (unlikely(rc == HA_ERR_FOUND_DUPP_KEY))
+      duplicate_error_index = 0;
+    DBUG_RETURN(rc);
+  }
+
 
   // multiple indices? then create a new transaction and update
   // all indices
@@ -1180,6 +1184,8 @@ UpscaledbHandler::write_row(uchar *buf)
 
   int rc = insert_multiple_indices(share, table, buf, txnp.txn,
                   key_arena, record_arena);
+  if (unlikely(rc == HA_ERR_FOUND_DUPP_KEY))
+    duplicate_error_index = 0;
   if (unlikely(rc))
     DBUG_RETURN(rc);
 
@@ -1236,12 +1242,17 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   // fast code path: if there's just one primary key then try to overwrite
   // the record, or re-insert if the key was modified
   if (share->dbmap.size() == 1) {
-    assert(cursor && ups_cursor_get_database(cursor) == share->dbmap[0].db);
-
     // if both keys are equal: simply overwrite the record of the
     // current key
     if (!changed[0]) {
-      st = ups_cursor_overwrite(cursor, &record, 0);
+      if (likely(cursor != 0)) {
+        assert(ups_cursor_get_database(cursor) == share->dbmap[0].db);
+        st = ups_cursor_overwrite(cursor, &record, 0);
+      }
+      else {
+        ups_key_t key = key_from_row(table, (uchar *)old_buf, 0, tmp1);
+        st = ups_db_insert(share->dbmap[0].db, 0, &key, &record, UPS_OVERWRITE);
+      }
       if (unlikely(st != 0)) {
         log_error("ups_cursor_overwrite", st);
         DBUG_RETURN(1);
@@ -1427,7 +1438,7 @@ int
 UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
                 key_part_map keypart_map, enum ha_rkey_function find_flag)
 {
-  assert(keypart_map == 1); // TODO
+  //assert(keypart_map == 1); // TODO
 
   DBUG_ENTER("UpscaledbHandler::index_read");
   MYSQL_INDEX_READ_ROW_START(table_share->db.str, table_share->table_name.str);
@@ -1906,6 +1917,9 @@ UpscaledbHandler::info(uint flag)
 
   if (flag & HA_STATUS_AUTO)
     stats.auto_increment_value = share->initial_autoinc_value;
+
+  if (flag & HA_STATUS_ERRKEY)
+    errkey = duplicate_error_index;
 
   DBUG_RETURN(0);
 }

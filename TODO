@@ -348,25 +348,17 @@ x once more double-check the table flags
 x run manual recovery tests!
 
 o run more tests
-    -> ./mysql-test-run.pl --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so engines/funcs.crash_manyindexes_number
+    -> MTR_MAX_TEST_FAIL=1000 ./mysql-test-run.pl --force --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so engines/funcs.crash_manyindexes_number
 
-    x engines/funcs.ai_init_insert_id
     x engines/funcs.an_calendar
     x engines/funcs.an_string
     x engines/funcs.an_number
     x engines/funcs.ai_init_create_table
     x engines/funcs.ai_init_alter_table
-
     x fix regressions in run.sh!!
-
     x engines/funcs.crash_manyindexes_number
     x engines/funcs.crash_manyindexes_string
     x engines/funcs.ai_reset_by_truncate
-
-    x engines/funcs.ai_sql_auto_is_null
-      -- inserts NULL as auto-increment although column was created as NOT NULL
-      -- would have to convert the whole database to BINARY type :(
-      -> ignore this
     x engines/funcs.de_truncate_autoinc
     x engines/funcs.ai_reset_by_truncate
     x engines/funcs.de_autoinc
@@ -378,11 +370,30 @@ o run more tests
     x engines/funcs.up_limit
     x engines/funcs.up_multi_db_table
     x engines/funcs.up_multi_table
+    x engines/funcs.ai_init_insert_id
+    x engines/funcs.ix_index_string_length
+    x engines/funcs.in_calendar_pk_constraint_error
+    x engines/funcs.in_calendar_pk_constraint_ignore
+
+    o engines/funcs.ld_unique_error1
+        -- last LOAD DATA statement fails b/c a record is not correctly
+            overwritten. UpscaledbHandler::update_row calls record_from_row()
+            calls pack_record(), which accesses the Field objects of the
+            current table to extract BLOB data. But in this case the BLOB
+            data is in the new_buf variable, and not in the Field!
+        -- done, but the argument contains the old row, and therefore the
+            old value is written. Everything works with InnoDB. Do a
+            step-by-step comparison
+        -- same argument in InnoDB. Am I unpacking the row incorrectly??
+
+    o engines/funcs.ld_unique_error1_local
+    o engines/funcs.ld_unique_error2
+    o engines/funcs.ld_unique_error2_local
+    o engines/funcs.ld_unique_error3
+    o engines/funcs.ld_unique_error3_local
 
     o engines/funcs.in_calendar_2_unique_constraints_duplicate_update
     o engines/funcs.in_calendar_pk_constraint_duplicate_update
-    o engines/funcs.in_calendar_pk_constraint_error
-    o engines/funcs.in_calendar_pk_constraint_ignore
     o engines/funcs.in_calendar_unique_constraint_duplicate_update
     o engines/funcs.in_calendar_unique_constraint_error
     o engines/funcs.in_calendar_unique_constraint_ignore
@@ -419,34 +430,16 @@ o run more tests
     o engines/funcs.in_string_unique_constraint_duplicate_update
     o engines/funcs.in_string_unique_constraint_error
     o engines/funcs.in_string_unique_constraint_ignore
-    o engines/funcs.ix_index_string_length
-    o engines/funcs.ld_less_columns
-    o engines/funcs.ld_more_columns_truncated
-    o engines/funcs.ld_unique_error1
-    o engines/funcs.ld_unique_error1_local
-    o engines/funcs.ld_unique_error2
-    o engines/funcs.ld_unique_error2_local
-    o engines/funcs.ld_unique_error3
-    o engines/funcs.ld_unique_error3_local
     o engines/funcs.re_number_range
     o engines/funcs.re_number_range_set
     o engines/funcs.re_number_select
     o engines/funcs.re_string_range
     o engines/funcs.re_string_range_set
-    o engines/funcs.se_string_orderby
-    o engines/funcs.ta_orderby
-    o engines/funcs.tc_partition_analyze
     o engines/funcs.tc_partition_change_from_range_to_hash_key
-    o engines/funcs.tc_partition_optimize
     o engines/funcs.tc_partition_rebuild
-    o engines/funcs.tc_partition_remove
     o engines/funcs.tc_partition_reorg_divide
     o engines/funcs.tc_partition_reorg_hash_key
     o engines/funcs.tc_partition_reorg_merge
-    o engines/funcs.tc_partition_repair
-    o engines/funcs.tc_partition_sub1
-    o engines/funcs.tc_partition_sub2
-    o engines/funcs.tc_rename_error
     o engines/funcs.tc_temporary_column
     o engines/funcs.tc_temporary_column_length
     o engines/funcs.tr_all_type_triggers
@@ -456,6 +449,14 @@ o run more tests
     o engines/funcs.tr_insert_after_error
     o engines/funcs.tr_update
     o engines/funcs.tr_update_after_error
+
+  -> wontfix:
+    o engines/funcs.ai_sql_auto_is_null
+      -- inserts NULL as auto-increment although column was created as NOT NULL
+      -- would have to convert the whole database to BINARY type :(
+      -> ignore this
+      -> check if we can return an error
+
 
 x wordpress does not yet work
 

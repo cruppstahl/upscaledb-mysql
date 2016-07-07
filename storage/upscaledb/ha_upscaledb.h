@@ -272,6 +272,11 @@ struct UpscaledbHandler : handler {
                   ulonglong nb_desired_values, ulonglong *first_value,
                   ulonglong *nb_reserved_values);
 
+  virtual void release_auto_increment() {
+    if (next_insert_id > share->autoinc_value)
+      share->autoinc_value = next_insert_id - 1;
+  }
+
   int info(uint);                                               ///< required
   
   int extra(enum ha_extra_function operation);
@@ -332,4 +337,7 @@ struct UpscaledbHandler : handler {
 
   // For storing the record number id of a row
   uint32_t recno_row_id;
+
+  // The index which reported a duplicate key
+  uint32_t duplicate_error_index;
 };
