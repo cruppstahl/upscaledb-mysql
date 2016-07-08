@@ -374,67 +374,30 @@ o run more tests
     x engines/funcs.ix_index_string_length
     x engines/funcs.in_calendar_pk_constraint_error
     x engines/funcs.in_calendar_pk_constraint_ignore
+    x engines/funcs.ld_unique_error1
+    x engines/funcs.ld_unique_error1_local
+    x engines/funcs.ld_unique_error2
+    x engines/funcs.ld_unique_error2_local
+    x engines/funcs.ld_unique_error3
+    x engines/funcs.ld_unique_error3_local
+    x engines/funcs.se_string_distinct
+    x engines/funcs.se_string_from
+    x engines/funcs.se_string_groupby
+    x engines/funcs.se_string_having
+    x engines/funcs.se_string_limit
+    x engines/funcs.se_string_orderby
+    x engines/funcs.se_string_union
+    x engines/funcs.se_string_where
+    x engines/funcs.se_string_where_and
+    x engines/funcs.se_string_where_or
 
-    o engines/funcs.ld_unique_error1
-        -- last LOAD DATA statement fails b/c a record is not correctly
-            overwritten. UpscaledbHandler::update_row calls record_from_row()
-            calls pack_record(), which accesses the Field objects of the
-            current table to extract BLOB data. But in this case the BLOB
-            data is in the new_buf variable, and not in the Field!
-        -- done, but the argument contains the old row, and therefore the
-            old value is written. Everything works with InnoDB. Do a
-            step-by-step comparison
-        -- same argument in InnoDB. Am I unpacking the row incorrectly??
-
-    o engines/funcs.ld_unique_error1_local
-    o engines/funcs.ld_unique_error2
-    o engines/funcs.ld_unique_error2_local
-    o engines/funcs.ld_unique_error3
-    o engines/funcs.ld_unique_error3_local
-
-    o engines/funcs.in_calendar_2_unique_constraints_duplicate_update
-    o engines/funcs.in_calendar_pk_constraint_duplicate_update
     o engines/funcs.in_calendar_unique_constraint_duplicate_update
-    o engines/funcs.in_calendar_unique_constraint_error
-    o engines/funcs.in_calendar_unique_constraint_ignore
-    o engines/funcs.in_insert_select_unique_violation
-    o engines/funcs.in_multicolumn_calendar_pk_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_calendar_pk_constraint_error
-    o engines/funcs.in_multicolumn_calendar_pk_constraint_ignore
     o engines/funcs.in_multicolumn_calendar_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_calendar_unique_constraint_error
-    o engines/funcs.in_multicolumn_calendar_unique_constraint_ignore
-    o engines/funcs.in_multicolumn_number_pk_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_number_pk_constraint_error
-    o engines/funcs.in_multicolumn_number_pk_constraint_ignore
     o engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_number_unique_constraint_error
-    o engines/funcs.in_multicolumn_number_unique_constraint_ignore
     o engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_string_pk_constraint_error
-    o engines/funcs.in_multicolumn_string_pk_constraint_ignore
     o engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_string_unique_constraint_error
-    o engines/funcs.in_multicolumn_string_unique_constraint_ignore
-    o engines/funcs.in_number_2_unique_constraints_duplicate_update
-    o engines/funcs.in_number_pk_constraint_duplicate_update
-    o engines/funcs.in_number_pk_constraint_error
-    o engines/funcs.in_number_pk_constraint_ignore
     o engines/funcs.in_number_unique_constraint_duplicate_update
-    o engines/funcs.in_number_unique_constraint_error
-    o engines/funcs.in_number_unique_constraint_ignore
-    o engines/funcs.in_string_2_unique_constraints_duplicate_update
-    o engines/funcs.in_string_pk_constraint_duplicate_update
-    o engines/funcs.in_string_pk_constraint_error
-    o engines/funcs.in_string_pk_constraint_ignore
     o engines/funcs.in_string_unique_constraint_duplicate_update
-    o engines/funcs.in_string_unique_constraint_error
-    o engines/funcs.in_string_unique_constraint_ignore
-    o engines/funcs.re_number_range
-    o engines/funcs.re_number_range_set
-    o engines/funcs.re_number_select
-    o engines/funcs.re_string_range
-    o engines/funcs.re_string_range_set
     o engines/funcs.tc_partition_change_from_range_to_hash_key
     o engines/funcs.tc_partition_rebuild
     o engines/funcs.tc_partition_reorg_divide
@@ -444,9 +407,6 @@ o run more tests
     o engines/funcs.tc_temporary_column_length
     o engines/funcs.tr_all_type_triggers
     o engines/funcs.tr_delete
-    o engines/funcs.tr_delete_new_error
-    o engines/funcs.tr_insert
-    o engines/funcs.tr_insert_after_error
     o engines/funcs.tr_update
     o engines/funcs.tr_update_after_error
 

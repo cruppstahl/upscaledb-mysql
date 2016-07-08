@@ -393,6 +393,8 @@ extract_varchar_field_info(Field *field, uint32_t *len_bytes,
   *len_bytes = 4;
 }
 
+// transforms record from the condensed upscaledb format to the MySQL row
+// format
 static inline ups_record_t
 unpack_record(TABLE *table, ups_record_t *record, uint8_t *buf)
 {
@@ -429,9 +431,33 @@ unpack_record(TABLE *table, ups_record_t *record, uint8_t *buf)
       size = *(uint32_t *)src;
       src += sizeof(uint32_t);
       Field_blob *blob = *(Field_blob **)field;
-      blob->set_ptr(size, src);
-      dst += (*field)->pack_length();
+      switch (blob->pack_length() - 8) {
+        case 1:
+          *dst = (uint8_t)size;
+          break;
+        case 2:
+          *(uint16_t *)dst = (uint16_t)size;
+          break;
+        case 3: // TODO not yet tested...
+          dst[2] = (size & 0xff0000) >> 16;
+          dst[1] = (size & 0xff00) >> 8;
+          dst[0] = (size &  0xff);
+          break;
+        case 4:
+          *(uint32_t *)dst = size;
+          break;
+        case 8:
+          *(uint64_t *)dst = size;
+          break;
+        default:
+          assert(!"not yet implemented");
+          break;
+      }
+
+      dst += (*field)->pack_length() - 8;
+      *(uint8_t **)dst = src;
       src += size;
+      dst += sizeof(uint8_t *);
       continue;
     }
 
@@ -445,6 +471,8 @@ unpack_record(TABLE *table, ups_record_t *record, uint8_t *buf)
   return r;
 }
 
+// transforms record from the MySQL row format to the condensed
+// upscaledb format
 static inline ups_record_t
 pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
 {
@@ -1438,8 +1466,6 @@ int
 UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
                 key_part_map keypart_map, enum ha_rkey_function find_flag)
 {
-  //assert(keypart_map == 1); // TODO
-
   DBUG_ENTER("UpscaledbHandler::index_read");
   MYSQL_INDEX_READ_ROW_START(table_share->db.str, table_share->table_name.str);
 
