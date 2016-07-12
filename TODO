@@ -390,14 +390,20 @@ o run more tests
     x engines/funcs.se_string_where
     x engines/funcs.se_string_where_and
     x engines/funcs.se_string_where_or
+    x engines/funcs.tr_all_type_triggers
+    x engines/funcs.tr_delete
+    x engines/funcs.in_number_unique_constraint_duplicate_update
+    x engines/funcs.in_calendar_unique_constraint_duplicate_update
 
-    o engines/funcs.in_calendar_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_calendar_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
-    o engines/funcs.in_number_unique_constraint_duplicate_update
     o engines/funcs.in_string_unique_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_calendar_unique_constraint_duplicate_update
+    o engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
+        -- die sort-order stimmt nicht da die keys mit einem
+            längen-byte beginnen. Dafür wird ein custom compare-cb benötigt,
+            das dann automatisch die string-längen berücksichtigt
+        -- ist das wirklich ein problem??
+    o engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
     o engines/funcs.tc_partition_change_from_range_to_hash_key
     o engines/funcs.tc_partition_rebuild
     o engines/funcs.tc_partition_reorg_divide
@@ -405,8 +411,6 @@ o run more tests
     o engines/funcs.tc_partition_reorg_merge
     o engines/funcs.tc_temporary_column
     o engines/funcs.tc_temporary_column_length
-    o engines/funcs.tr_all_type_triggers
-    o engines/funcs.tr_delete
     o engines/funcs.tr_update
     o engines/funcs.tr_update_after_error
 

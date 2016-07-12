@@ -1269,7 +1269,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
 
   // fast code path: if there's just one primary key then try to overwrite
   // the record, or re-insert if the key was modified
-  if (share->dbmap.size() == 1) {
+  if (share->dbmap.size() == 1 && share->autoidx.db == 0) {
     // if both keys are equal: simply overwrite the record of the
     // current key
     if (!changed[0]) {
@@ -1288,7 +1288,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
       DBUG_RETURN(0);
     }
 
-    ups_key_t oldkey = key_from_row(table, (uchar *)old_buf, 0, record_arena);
+    ups_key_t oldkey = key_from_row(table, (uchar *)old_buf, 0, tmp1);
     ups_key_t newkey = key_from_row(table, new_buf, 0, key_arena);
 
     // otherwise delete the old row, insert the new one. Inserting can fail if
@@ -1312,6 +1312,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
       DBUG_RETURN(HA_ERR_FOUND_DUPP_KEY);
     if (unlikely(st != 0))
       DBUG_RETURN(1);
+
     st = txnp.commit();
     DBUG_RETURN(st == 0 ? 0 : 1);
   }
@@ -1324,6 +1325,14 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
     DBUG_RETURN(1);
 
   ups_key_t new_primary_key = key_from_row(table, new_buf, 0, record_arena);
+
+  // Are we overwriting an auto-generated index?
+  if (share->autoidx.db) {
+    ups_key_t k = ups_make_key(ref, sizeof(uint32_t));
+    st = ups_db_insert(share->autoidx.db, txnp.txn, &k, &record, UPS_OVERWRITE);
+    if (unlikely(st != 0))
+      DBUG_RETURN(1);
+  }
 
   // Primary index:
   // 1. Was the key modified? then re-insert it
@@ -1408,8 +1417,15 @@ UpscaledbHandler::delete_row(const uchar *buf)
   // fast code path: if there's just one index then use the cursor to
   // delete the record
   if (share->dbmap.size() <= 1) {
-    assert(cursor);
-    st = ups_cursor_erase(cursor, 0);
+    if (likely(cursor != 0)) {
+      st = ups_cursor_erase(cursor, 0);
+    }
+    else {
+      assert(share->dbmap.size() == 1);
+      ups_key_t key = key_from_row(table, buf, 0, key_arena);
+      st = ups_db_erase(share->dbmap[0].db, 0, &key, 0);
+    }
+
     if (unlikely(st != 0)) {
       log_error("ups_cursor_erase", st);
       DBUG_RETURN(1);
@@ -1469,11 +1485,13 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
   DBUG_ENTER("UpscaledbHandler::index_read");
   MYSQL_INDEX_READ_ROW_START(table_share->db.str, table_share->table_name.str);
 
+  bool read_primary_index = (active_index == 0 || active_index == MAX_KEY)
+                                && share->autoidx.db == 0;
+
   // when reading from the primary index: directly fetch record into |buf| 
   // if the row has fixed length
   ups_record_t record = ups_make_record(0, 0);
-  if ((active_index == 0 || active_index == MAX_KEY)
-        && row_is_fixed_length(table)) {
+  if (read_primary_index && row_is_fixed_length(table)) {
     record.data = buf;
     record.flags = UPS_RECORD_USER_ALLOC;
   }
@@ -1486,7 +1504,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
   else {
     assert(active_index < MAX_KEY);
     KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
-    uint32_t offset = 0;
+    uint32_t offset = 0; //table->s->null_bytes;
     uint16_t key_size = (uint16_t)table->key_info[active_index].key_length;
     uint16_t used_size = key_size;
     bool multi_part = table->key_info[active_index].user_defined_key_parts > 1;
@@ -1500,13 +1518,22 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
             || key_part->type == HA_KEYTYPE_VARTEXT2
             || key_part->type == HA_KEYTYPE_VARBINARY2) {
       key_size = *(uint16_t *)keybuf;
-      offset = 2;
+      offset += 2;
       // for compound indices: fill unused data with zeroes, otherwise the
       // lookup will fail
       if (unlikely(multi_part)) {
-        ::memcpy(key_arena.data(), keybuf, 2 + key_size);
-        ::memset(key_arena.data() + 2 + key_size, 0,
-                        key_arena.size() - key_size - 2);
+        if (key_part->type == HA_KEYTYPE_VARTEXT1
+            || key_part->type == HA_KEYTYPE_VARBINARY1) {
+          key_arena[0] = (uint8_t) *(uint16_t *)keybuf;
+          ::memcpy(key_arena.data() + 1, keybuf + 2, key_size);
+          ::memset(key_arena.data() + 1 + key_size, 0,
+                          key_arena.size() - key_size - 2);
+        }
+        else {
+          ::memcpy(key_arena.data(), keybuf, 2 + key_size);
+          ::memset(key_arena.data() + 2 + key_size, 0,
+                          key_arena.size() - key_size - 2);
+        }
       }
       else
         keybuf += 2;
@@ -1525,7 +1552,8 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
 
     if (unlikely(multi_part)) {
       keybuf = key_arena.data();
-      key_size = (uint16_t)table->key_info[active_index].key_length;
+      if (used_size == key_size)
+        key_size = (uint16_t)table->key_info[active_index].key_length;
     }
     // skip the null-byte
     else if (key_part->null_bit) {
@@ -1571,25 +1599,34 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
     }
   }
 
-  // did we fetch from the primary index? then we have to unpack the record
-  if (st == 0
-        && (active_index == 0 || active_index == MAX_KEY)
-        && !row_is_fixed_length(table))
-    record = unpack_record(table, &record, buf);
+  if (likely(st == 0)) {
+    // Did we fetch from the primary index? then we have to unpack the record
+    if (read_primary_index && !row_is_fixed_length(table))
+      record = unpack_record(table, &record, buf);
 
-  // is this a secondary index? then use the primary key (in the record)
-  // to fetch the row
-  // TODO move this to a separate function
-  if (st == 0 && active_index != 0 && active_index != MAX_KEY) {
-    ups_key_t key = ups_make_key(record.data, (uint16_t)record.size);
-    ups_record_t rec = ups_make_record(0, 0);
-    if (row_is_fixed_length(table)) {
-      rec.data = buf;
-      rec.flags = UPS_RECORD_USER_ALLOC;
+    // Or is this a secondary index? then use the primary key (in the record)
+    // to fetch the row
+    else if (!read_primary_index) {
+      // Auto-generated index? Then store the internal row-id (which is a 32bit
+      // record number)
+      if (share->autoidx.db != 0) {
+        assert(ref_length == sizeof(uint32_t));
+        assert(record.size == sizeof(uint32_t));
+        *(uint32_t *)ref = *(uint32_t *)record.data;
+      }
+
+      ups_key_t key = ups_make_key(record.data, (uint16_t)record.size);
+      ups_record_t rec = ups_make_record(0, 0);
+      if (row_is_fixed_length(table)) {
+        rec.data = buf;
+        rec.flags = UPS_RECORD_USER_ALLOC;
+      }
+      st = ups_db_find(share->autoidx.db
+                        ? share->autoidx.db
+                        : share->dbmap[0].db, 0, &key, &rec, 0);
+      if (likely(st == 0) && !row_is_fixed_length(table))
+        rec = unpack_record(table, &rec, buf);
     }
-    st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0);
-    if (likely(st == 0) && !row_is_fixed_length(table))
-      rec = unpack_record(table, &rec, buf);
   }
 
   int rc = ups_status_to_error(table, "ups_db_find", st);
