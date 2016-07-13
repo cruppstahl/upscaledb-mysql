@@ -347,9 +347,15 @@ x once more double-check the table flags
 
 x run manual recovery tests!
 
-o run more tests
-    -> MTR_MAX_TEST_FAIL=1000 ./mysql-test-run.pl --force --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so engines/funcs.crash_manyindexes_number
+x what if an index is created or a column with an index is dropped
+    - will the field offsets be modified? if yes then the database names
+    will no longer match
+    -> not a problem
 
+o run more tests
+    -> MTR_MAX_TEST_FAIL=1000 ./mysql-test-run.pl --force --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so --mysqld=--default-tmp-storage-engine=upscaledb engines/funcs.crash_manyindexes_number
+
+    x engines/funcs.ai_sql_auto_is_null
     x engines/funcs.an_calendar
     x engines/funcs.an_string
     x engines/funcs.an_number
@@ -394,45 +400,39 @@ o run more tests
     x engines/funcs.tr_delete
     x engines/funcs.in_number_unique_constraint_duplicate_update
     x engines/funcs.in_calendar_unique_constraint_duplicate_update
+    x engines/funcs.in_string_unique_constraint_duplicate_update
+    x engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
+    x engines/funcs.tc_partition_change_from_range_to_hash_key
+    x engines/funcs.tc_partition_rebuild
+    x engines/funcs.tc_partition_reorg_divide
+    x engines/funcs.tc_partition_reorg_hash_key
+    x engines/funcs.tc_partition_reorg_merge
+    x engines/funcs.tc_temporary_column
+    x engines/funcs.tc_temporary_column_length
+    x engines/funcs.tr_update
+    x engines/funcs.tr_update_after_error
 
-    o engines/funcs.in_string_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_calendar_unique_constraint_duplicate_update
     o engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
-        -- die sort-order stimmt nicht da die keys mit einem
-            längen-byte beginnen. Dafür wird ein custom compare-cb benötigt,
-            das dann automatisch die string-längen berücksichtigt
-        -- ist das wirklich ein problem??
     o engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
-    o engines/funcs.tc_partition_change_from_range_to_hash_key
-    o engines/funcs.tc_partition_rebuild
-    o engines/funcs.tc_partition_reorg_divide
-    o engines/funcs.tc_partition_reorg_hash_key
-    o engines/funcs.tc_partition_reorg_merge
-    o engines/funcs.tc_temporary_column
-    o engines/funcs.tc_temporary_column_length
-    o engines/funcs.tr_update
-    o engines/funcs.tr_update_after_error
 
-  -> wontfix:
-    o engines/funcs.ai_sql_auto_is_null
-      -- inserts NULL as auto-increment although column was created as NOT NULL
-      -- would have to convert the whole database to BINARY type :(
-      -> ignore this
-      -> check if we can return an error
+o should we fix the sort order for variable-length compound keys?
+    the compare function should ignore the encoded lengths
 
-
-x wordpress does not yet work
+o make sure that wordpress works
 
 x implement UpscaledbHandler::delete_all_rows()
 x implement UpscaledbHandler::truncate()
+x implementint ha_heap::reset_auto_increment(ulonglong value)
 o implement UpscaledbHandler::records_in_range()
-o implementint ha_heap::reset_auto_increment(ulonglong value)
 o implement UpscaledbHandler::records() (does this make things faster??)
 o implement UpscaledbHandler::extra()
 o implement UpscaledbHandler::info()
 o implement UpscaledbHandler::start_bulk_*() ???
 o implement all other missing functions
+
+o temporary tables: automatically disable journalling
+    sql/table.cc:3313
+    db_stat & HA_OPEN_TEMPORARY ? HA_OPEN_TMP_TABLE ...
 
 o support additional flags
     o crc32
@@ -449,20 +449,16 @@ o support additional flags
         enough for all run-time options that will come
         o use mysql's ini file format (and parser, if possible)
 
-o what if an index is created or a column with an index is dropped
-    - will the field offsets be modified? if yes then the database names
-    will no longer match
-    o add more tests with ALTER TABLE
-
-o temporary tables: automatically disable journalling
-    sql/table.cc:3313
-    db_stat & HA_OPEN_TEMPORARY ? HA_OPEN_TMP_TABLE ...
-
 o use upsserver to access the environment remotely
     o only if enabled in the configuration
     o only bind to localhost; allow others through the config file
     o document the security problems of this approach (all MySQL security
         layers are ignored)
+
+o we need a "version" indicator, in case we will change the data format in the
+    future
+
+o run other test suites
 
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
@@ -474,6 +470,9 @@ o make sure that phpmyadmin runs fine
 o lots of documentation
     o need samples, i.e. with java and php
     o installation for various operating systems
+    o how to improve performance
+        -> fixed length better than variable length,
+            unique better than non-unique etc
 
 o second release (beta) --------------------------------------------------
 
@@ -482,6 +481,7 @@ o lots of PR
 o etc
 o identify the 3 most commonly used MySQL operations in Wordpress; use
     the API instead and see if it improves performance
+    -> can we move this to a wordpress plugin??
 
 o public release ---------------------------------------------------------
 
@@ -540,11 +540,4 @@ o improve the performance for duplicate keys
     get the last known value. Use recno-databases instead!
     but remember that it's possible to use UPDATE to change the key, as long as
     the key was not yet used.
-
-. analytical tables: introduce a special option to make a column "analytical"?
-    this column would be indexed by primary key, but be stored in a separate
-    database. This would be perfect performance for UQI queries.
-    -> is this required? we can run queries over the keys of a secondary index
-    -> this would be a "true" column store
-
-
+    -> or can we cache index_last() instead?

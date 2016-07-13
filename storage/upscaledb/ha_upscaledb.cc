@@ -419,6 +419,9 @@ unpack_record(TABLE *table, ups_record_t *record, uint8_t *buf)
       uint32_t len_bytes;
       extract_varchar_field_info(*field, &len_bytes, &size, src);
       ::memcpy(dst, src, size + len_bytes);
+      if (likely((*field)->pack_length() > size + len_bytes))
+        ::memset(dst + size + len_bytes, 0,
+                        (*field)->pack_length() - (size + len_bytes));
       dst += (*field)->pack_length();
       src += size + len_bytes;
       continue;
@@ -803,8 +806,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 {
   DBUG_ENTER("UpscaledbHandler::open");
 
-  assert(share == 0);
-  share = allocate_or_get_share();
+  if (!share)
+    share = allocate_or_get_share();
+  else
+    assert(share->env == 0);
   record_arena.resize(table->s->rec_buff_length);
   ref_length = 0;
 
@@ -1164,6 +1169,18 @@ ups_status_to_error(TABLE *table, const char *msg, ups_status_t st)
   return HA_ERR_GENERIC;
 }
 
+static inline int
+encoded_length_bytes(uint32_t type)
+{
+  if (type == HA_KEYTYPE_VARTEXT1
+          || type == HA_KEYTYPE_VARBINARY1)
+    return 1;
+  if (type == HA_KEYTYPE_VARTEXT2
+          || type == HA_KEYTYPE_VARBINARY2)
+    return 2;
+  return 0;
+}
+
 // write_row() inserts a row. No extra() hint is given currently if a bulk load
 // is happening. buf() is a byte array of data. You can use the field
 // information to extract the data from the native byte array type.
@@ -1504,64 +1521,52 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
   else {
     assert(active_index < MAX_KEY);
     KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
-    uint32_t offset = 0; //table->s->null_bytes;
-    uint16_t key_size = (uint16_t)table->key_info[active_index].key_length;
-    uint16_t used_size = key_size;
     bool multi_part = table->key_info[active_index].user_defined_key_parts > 1;
+    ups_key_t key = ups_make_key(0, 0);
 
-    if (unlikely(multi_part))
-      key_arena.resize(table->key_info[active_index].key_length);
-
-    // VARCHAR and VARBINARY have 2 bytes with meta-info at the beginning
-    if (key_part->type == HA_KEYTYPE_VARTEXT1
-            || key_part->type == HA_KEYTYPE_VARBINARY1
-            || key_part->type == HA_KEYTYPE_VARTEXT2
-            || key_part->type == HA_KEYTYPE_VARBINARY2) {
-      key_size = *(uint16_t *)keybuf;
-      offset += 2;
-      // for compound indices: fill unused data with zeroes, otherwise the
-      // lookup will fail
-      if (unlikely(multi_part)) {
-        if (key_part->type == HA_KEYTYPE_VARTEXT1
-            || key_part->type == HA_KEYTYPE_VARBINARY1) {
-          key_arena[0] = (uint8_t) *(uint16_t *)keybuf;
-          ::memcpy(key_arena.data() + 1, keybuf + 2, key_size);
-          ::memset(key_arena.data() + 1 + key_size, 0,
-                          key_arena.size() - key_size - 2);
-        }
-        else {
-          ::memcpy(key_arena.data(), keybuf, 2 + key_size);
-          ::memset(key_arena.data() + 2 + key_size, 0,
-                          key_arena.size() - key_size - 2);
-        }
-      }
-      else
-        keybuf += 2;
-
-      used_size = key_size;
+    // if this is not a multi-part key AND it has fixed length then we can
+    // simply use the existing |keybuf| pointer for the lookup
+    if (!multi_part && !encoded_length_bytes(key_part->type)) {
+      key.data = key_part->null_bit ? (void *)(keybuf + 1) : (void *)keybuf;
+      key.size = key_part->length;
     }
-    // Fixed length columns
+    // otherwise we have to unpack the row and transform it into the
+    // correct format
     else {
-      if (unlikely(multi_part)) {
-        ::memcpy(key_arena.data(), keybuf, key_part->length);
-        ::memset(key_arena.data() + key_part->length, 0,
-                        key_arena.size() - key_part->length);
-        used_size = key_part->length;
+      const uint8_t *p = keybuf;
+      key_arena.clear();
+      uint32_t key_parts = table->key_info[active_index].user_defined_key_parts;
+
+      for (uint32_t i = 0; i < key_parts; i++, key_part++) {
+        // skip null byte, if it exists
+        if (key_part->null_bit)
+          p++;
+
+        uint32_t length;
+        switch (encoded_length_bytes(key_part->type)) {
+          case 0:
+            length = key_part->length;
+            break;
+          case 1:
+          case 2:
+            length = *(uint16_t *)p;
+            // append the length if it's a multi-part key
+            if (key_parts > 1) {
+              key_arena.insert(key_arena.end(), p, p + 2);
+              key.size += 2;
+            }
+            p += 2;
+            break;
+        }
+
+        // append the key data
+        key_arena.insert(key_arena.end(), p, p + length);
+        key.size += length;
+        p += length;
       }
-    }
 
-    if (unlikely(multi_part)) {
-      keybuf = key_arena.data();
-      if (used_size == key_size)
-        key_size = (uint16_t)table->key_info[active_index].key_length;
+      key.data = key_arena.data();
     }
-    // skip the null-byte
-    else if (key_part->null_bit) {
-      keybuf++;
-      key_size--;
-    }
-
-    ups_key_t key = ups_make_key((void *)keybuf, key_size);
 
     switch (find_flag) {
       case HA_READ_KEY_EXACT:
@@ -1569,8 +1574,8 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
           st = ups_cursor_find(cursor, &key, &record, 0);
         else {
           st = ups_cursor_find(cursor, &key, &record, UPS_FIND_GEQ_MATCH);
-          if (st == 0 && ::memcmp(key.data, keybuf, offset + used_size) != 0)
-            st = UPS_KEY_NOT_FOUND;
+          //if (st == 0 && ::memcmp(key.data, keybuf, offset + used_size) != 0)
+            //st = UPS_KEY_NOT_FOUND;
         }
         break;
       case HA_READ_KEY_OR_NEXT:
