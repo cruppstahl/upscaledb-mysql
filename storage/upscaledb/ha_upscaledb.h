@@ -75,7 +75,7 @@ struct DbDesc {
 
 struct UpscaledbShare : public Handler_share {
   UpscaledbShare()
-    : env(0), initial_autoinc_value(0), autoinc_value(0) {
+    : env(0), initial_autoinc_value(0), autoinc_value(0), ref_length(0) {
     thr_lock_init(&lock);
   }
 
@@ -99,6 +99,9 @@ struct UpscaledbShare : public Handler_share {
 
   // current AUTO_INCREMENT value
   uint64_t autoinc_value;
+
+  // length of the |ref| length indicator
+  uint32_t ref_length;
 };
 
 struct UpscaledbHandler : handler {

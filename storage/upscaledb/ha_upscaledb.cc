@@ -39,6 +39,8 @@
 #   define unlikely(x) (x)
 #endif
 
+#define CUSTOM_COMPARE_NAME "varlencmp"
+
 struct CreateInfo {
   CreateInfo(HA_CREATE_INFO *ci)
     : autoinc_value(ci->auto_increment_value) {
@@ -46,6 +48,103 @@ struct CreateInfo {
 
   uint64_t autoinc_value;
 };
+
+struct KeyPart {
+  KeyPart(uint32_t type_ = 0, uint32_t length_ = 0)
+    : type(type_), length(length_) {
+  }
+
+  uint32_t type;
+  uint32_t length;
+};
+
+struct CustomCompareState {
+  CustomCompareState(KEY *key) {
+    if (key) {
+      for (uint32_t i = 0; i < key->user_defined_key_parts; i++) {
+        KEY_PART_INFO *key_part = &key->key_part[i];
+        parts.push_back(KeyPart(key_part->type, key_part->length));
+      }
+    }
+  }
+
+  std::vector<KeyPart> parts;
+};
+
+static inline int
+encoded_length_bytes(uint32_t type)
+{
+  if (type == HA_KEYTYPE_VARTEXT1
+          || type == HA_KEYTYPE_VARBINARY1)
+    return 1;
+  if (type == HA_KEYTYPE_VARTEXT2
+          || type == HA_KEYTYPE_VARBINARY2)
+    return 2;
+  return 0;
+}
+
+static TABLE *recovery_table;
+
+static int
+custom_compare_func(ups_db_t *db, const uint8_t *lhs, uint32_t lhs_length,
+                const uint8_t *rhs, uint32_t rhs_length)
+{
+  CustomCompareState *ccs = (CustomCompareState *)ups_get_context_data(db, 1);
+  CustomCompareState tmp_ccs(ccs != 0
+                        ? 0
+                        : &recovery_table->key_info[ups_db_get_name(db) - 2]);
+  // during recovery, the context pointer was not yet installed. in this case
+  // we use the temporary one.
+  if (ccs == 0)
+    ccs = &tmp_ccs;
+
+  for (size_t i = 0; i < ccs->parts.size(); i++) {
+    KeyPart *key_part = &ccs->parts[i];
+
+    int cmp;
+
+    // TODO use *real* comparison function for other columns like uint32,
+    // float, ...?
+    switch (encoded_length_bytes(key_part->type)) {
+      case 0: // fixed length columns
+        cmp = ::memcmp(lhs, rhs, key_part->length);
+        lhs_length = key_part->length;
+        rhs_length = key_part->length;
+        break;
+      case 1:
+        lhs_length = *lhs;
+        lhs += 1;
+        rhs_length = *rhs;
+        rhs += 1;
+        cmp = ::memcmp(lhs, rhs, std::min(lhs_length, rhs_length));
+        break;
+      case 2:
+        lhs_length = *(uint16_t *)lhs;
+        lhs += 2;
+        rhs_length = *(uint16_t *)rhs;
+        rhs += 2;
+        cmp = ::memcmp(lhs, rhs, std::min(lhs_length, rhs_length));
+        break;
+      default:
+        assert(!"shouldn't be here");
+    }
+
+    if (cmp != 0)
+      return cmp;
+    // cmp == 0
+    if (lhs_length < rhs_length)
+      return -1;
+    if (lhs_length > rhs_length)
+      return +1;
+
+    // both keys are equal - continue with the next one
+    lhs += lhs_length;
+    rhs += rhs_length;
+  }
+
+  // still here? then both keys must be equal
+  return 0;
+}
 
 static std::map<std::string, ups_env_t *> environments;
 static boost::mutex environments_mutex;
@@ -256,7 +355,9 @@ table_field_info(KEY_PART_INFO *key_part)
     case HA_KEYTYPE_BINARY:
     case HA_KEYTYPE_TEXT:
       return std::make_pair((uint32_t)UPS_TYPE_BINARY, key_part->length);
+    case HA_KEYTYPE_VARTEXT1:
     case HA_KEYTYPE_VARTEXT2:
+    case HA_KEYTYPE_VARBINARY1:
     case HA_KEYTYPE_VARBINARY2:
       return std::make_pair((uint32_t)UPS_TYPE_BINARY, 0);
   }
@@ -271,19 +372,33 @@ table_key_info(KEY *key_info)
   if (key_info->user_defined_key_parts == 1)
     return table_field_info(key_info->key_part);
 
-  // otherwise accumulate the total size of all columns which form this
-  // key. if any of these columns has variable length then stop.
+  // Otherwise accumulate the total size of all columns which form this
+  // key.
+  // If any key has variable length then we need to use our custom compare
+  // function.
   uint32_t total_size = 0;
+  bool need_custom_compare = false;
   for (uint32_t i = 0; i < key_info->user_defined_key_parts; i++) {
     std::pair<uint32_t, uint32_t> p = table_field_info(&key_info->key_part[i]);
-    if (p.second == 0)
-      return std::make_pair((uint32_t)UPS_TYPE_BINARY, 0u);
-    if (p.second == UPS_KEY_SIZE_UNLIMITED)
+    if (total_size == UPS_KEY_SIZE_UNLIMITED
+            || p.second == 0
+            || p.second == UPS_KEY_SIZE_UNLIMITED)
       total_size = UPS_KEY_SIZE_UNLIMITED;
     else
       total_size += p.second;
+
+    switch (key_info->key_part[i].type) {
+      case HA_KEYTYPE_VARTEXT1:
+      case HA_KEYTYPE_VARTEXT2:
+      case HA_KEYTYPE_VARBINARY1:
+      case HA_KEYTYPE_VARBINARY2:
+        need_custom_compare = true;
+    }
   }
-  return std::make_pair((uint32_t)UPS_TYPE_BINARY, total_size);
+
+  return std::make_pair(need_custom_compare
+                            ? UPS_TYPE_CUSTOM
+                            : UPS_TYPE_BINARY, total_size);
 }
 
 static inline std::string
@@ -299,17 +414,17 @@ key_from_single_row(TABLE *table, const uchar *buf, KEY_PART_INFO *key_part)
   uint16_t key_size = (uint16_t)key_part->length;
   uint32_t offset = key_part->offset;
 
-  if (key_part->type == HA_KEYTYPE_VARTEXT1
-          || key_part->type == HA_KEYTYPE_VARBINARY1) {
-    key_size = buf[offset];
-    offset++;
-    key_size = std::min(key_size, key_part->length);
-  }
-  else if (key_part->type == HA_KEYTYPE_VARTEXT2
-          || key_part->type == HA_KEYTYPE_VARBINARY2) {
-    key_size = *(uint16_t *)&buf[offset];
-    offset += 2;
-    key_size = std::min(key_size, key_part->length);
+  switch (encoded_length_bytes(key_part->type)) {
+    case 1:
+      key_size = buf[offset];
+      offset++;
+      key_size = std::min(key_size, key_part->length);
+      break;
+    case 2:
+      key_size = *(uint16_t *)&buf[offset];
+      offset += 2;
+      key_size = std::min(key_size, key_part->length);
+      break;
   }
 
   ups_key_t key = ups_make_key((uchar *)buf + offset, key_size);
@@ -326,25 +441,24 @@ key_from_row(TABLE *table, const uchar *buf, int index, ByteVector &arena)
   for (uint32_t i = 0; i < table->key_info[index].user_defined_key_parts; i++) {
     KEY_PART_INFO *key_part = &table->key_info[index].key_part[i];
     uint16_t key_size = (uint16_t)key_part->length;
-    uint32_t offset = key_part->offset;
-    uint8_t *p = (uint8_t *)buf + offset;
+    uint8_t *p = (uint8_t *)buf + key_part->offset;
 
-    if (key_part->type == HA_KEYTYPE_VARTEXT1
-            || key_part->type == HA_KEYTYPE_VARBINARY1) {
-      key_size = *p;
-      arena.insert(arena.end(), p, p + 1);
-      p += 1;
-    }
-    else if (key_part->type == HA_KEYTYPE_VARTEXT2
-            || key_part->type == HA_KEYTYPE_VARBINARY2) {
-      key_size = *(uint16_t *)p;
-      arena.insert(arena.end(), p, p + 2);
-      p += 2;
-    }
-    // fixed length columns
-    else {
-      arena.insert(arena.end(), p, p + key_size);
-      continue;
+    switch (encoded_length_bytes(key_part->type)) {
+      case 1:
+        key_size = *p;
+        arena.insert(arena.end(), p, p + 1);
+        p += 1;
+        break;
+      case 2:
+        key_size = *(uint16_t *)p;
+        arena.insert(arena.end(), p, p + 2);
+        p += 2;
+        break;
+      case 0: // fixed length columns
+        arena.insert(arena.end(), p, p + key_size);
+        continue;
+      default:
+        assert(!"shouldn't be here");
     }
 
     // append the data to our memory buffer
@@ -352,10 +466,6 @@ key_from_row(TABLE *table, const uchar *buf, int index, ByteVector &arena)
     if ((key_part->key_part_flag & HA_VAR_LENGTH_PART) == 0)
       p = *(uint8_t **)p;
     arena.insert(arena.end(), p, p + key_size);
-    while (key_size < key_part->length) {
-      arena.push_back('\0');
-      key_size++;
-    }
   }
 
   ups_key_t key = ups_make_key(arena.data(), (uint16_t)arena.size());
@@ -551,9 +661,9 @@ record_from_row(TABLE *table, uint8_t *buf, ByteVector &arena)
 }
 
 static inline uint16_t
-dbname(Field *field)
+dbname(int index)
 {
-  return field->field_index + 2;
+  return index + 2;
 }
 
 static inline bool
@@ -671,6 +781,8 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
 
   assert(share->dbmap.empty());
 
+  ups_register_compare(CUSTOM_COMPARE_NAME, custom_compare_func);
+
   // foreach indexed field: create a database which stores this index
   KEY *key_info = table->key_info;
   for (int i = 0; i < num_indices; i++, key_info++) {
@@ -682,16 +794,21 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
     uint32_t key_size = type_info.second;
 
     bool enable_duplicates = true;
-    bool is_primary_index = false;
+    bool is_primary_key = false;
 
-    if (0 == ::strcmp("PRIMARY", key_info->name)) {
-      is_primary_index = true;
-      has_primary_index = true;
-      primary_type_info = type_info;
-    }
+    if (0 == ::strcmp("PRIMARY", key_info->name))
+      is_primary_key = true;
 
     if (key_info->actual_flags & HA_NOSAME)
       enable_duplicates = false;
+
+    // If there is only one key, and it is unique: pretend that it's
+    // the primary key!
+    if (num_indices == 1 && enable_duplicates == false)
+      is_primary_key = true;
+
+    if (is_primary_key)
+      has_primary_index = true;
 
     // enable duplicates for all indices but the first
     uint32_t flags = 0;
@@ -701,6 +818,7 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
     int p = 1;
     ups_parameter_t params[] = {
         {UPS_PARAM_KEY_TYPE, key_type},
+        {0, 0},
         {0, 0},
         {0, 0},
         {0, 0},
@@ -714,9 +832,16 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
       p++;
     }
 
+    // this index requires a custom compare callback function?
+    if (key_type == UPS_TYPE_CUSTOM) {
+      params[p].name = UPS_PARAM_CUSTOM_COMPARE_NAME;
+      params[p].value = (uint64_t)CUSTOM_COMPARE_NAME;
+      p++;
+    }
+
     // for secondary indices: set the record type to the same type as
     // the primary key
-    if (!is_primary_index) {
+    if (!is_primary_key) {
       params[p].name = UPS_PARAM_RECORD_TYPE;
       params[p].value = primary_type_info.first;
       p++;
@@ -728,20 +853,20 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
     }
 
     // primary key: if a record has fixed length then set a parameter
-    if (is_primary_index && row_is_fixed_length(table)) {
+    if (is_primary_key && row_is_fixed_length(table)) {
       params[p].name = UPS_PARAM_RECORD_SIZE;
       params[p].value = table->s->stored_rec_length;
       p++;
     }
 
-    ups_status_t st = ups_env_create_db(share->env, &db, dbname(field),
+    ups_status_t st = ups_env_create_db(share->env, &db, dbname(i),
                                 flags, params);
     if (unlikely(st != 0)) {
       log_error("ups_env_create_db", st);
       return st;
     }
 
-    DbDesc dbdesc(db, field, enable_duplicates, is_primary_index);
+    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key);
     dbdesc.max_key_cache = initialize_max_key_cache(db, key_type);
     share->dbmap.push_back(dbdesc);
   }
@@ -806,6 +931,8 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 {
   DBUG_ENTER("UpscaledbHandler::open");
 
+  ups_register_compare(CUSTOM_COMPARE_NAME, custom_compare_func);
+
   if (!share)
     share = allocate_or_get_share();
   else
@@ -817,8 +944,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   thr_lock_data_init(&share->lock, &lock_data, NULL);
 
-  if (share->env != 0)
+  if (share->env != 0) {
+    ref_length = share->ref_length;
     DBUG_RETURN(0);
+  }
   close_and_remove_env(name);
 
   std::string env_name = format_environment_name(name);
@@ -829,10 +958,21 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
       {0, 0}
   };
 
+  uint32_t flags = 0;
+
+  // Temporary databases are opened in memory; read-only databases are
+  // opened in read-only mode
+  if (mode & O_RDONLY)
+    flags |= UPS_READ_ONLY;
+  if (mode & HA_OPEN_TMP_TABLE)
+    flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
+  else
+    flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
+
   // open the Environment
+  recovery_table = table;
   ups_status_t st = ups_env_open(&share->env, env_name.c_str(),
-                        UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY,
-                        &params[0]);
+                                flags, &params[0]);
   if (unlikely(st != 0)) {
     log_error("ups_env_open", st);
     DBUG_RETURN(1);
@@ -852,20 +992,30 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
     bool is_primary_key = false;
     bool enable_duplicates = true;
-    if (0 == ::strcmp("PRIMARY", key_info->name)) {
+    if (0 == ::strcmp("PRIMARY", key_info->name))
       is_primary_key = true;
-      has_primary_index = true;
-      ref_length = table->key_info[0].key_length;
-    }
 
     if (key_info->actual_flags & HA_NOSAME)
       enable_duplicates = false;
 
-    st = ups_env_open_db(share->env, &db, dbname(field), 0, 0);
+    // If there is only one key, and it is unique: pretend that it's
+    // the primary key!
+    if (num_indices == 1 && enable_duplicates == false)
+      is_primary_key = true;
+
+    if (is_primary_key) {
+      has_primary_index = true;
+      share->ref_length = ref_length = table->key_info[0].key_length;
+    }
+
+    st = ups_env_open_db(share->env, &db, dbname(i), 0, 0);
     if (st != 0) {
       log_error("ups_env_open_db", st);
       DBUG_RETURN(1);
     }
+
+    // This leaks an object, but they're so tiny. Ignored for now.
+    ups_set_context_data(db, new CustomCompareState(&table->key_info[i]));
 
     std::pair<uint32_t, uint32_t> type_info;
     type_info = table_key_info(key_info);
@@ -897,7 +1047,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
       DBUG_RETURN(1);
     }
 
-    ref_length = sizeof(uint32_t);
+    share->ref_length = ref_length = sizeof(uint32_t);
     share->autoidx = DbDesc(db, 0, false, true);
   }
 
@@ -960,8 +1110,10 @@ insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
   }
 
   // Need to copy the key in the ByteVector - it will be required later
+  // TODO it's copied *from* key_arena *to* key_arena - says valgrind
+  // TODO looks like this is not required
   key_arena.resize(key.size);
-  ::memcpy(key_arena.data(), key.data, key.size);
+  ::memmove(key_arena.data(), key.data, key.size);
   return 0;
 }
 
@@ -1167,18 +1319,6 @@ ups_status_to_error(TABLE *table, const char *msg, ups_status_t st)
 
   log_error(msg, st);
   return HA_ERR_GENERIC;
-}
-
-static inline int
-encoded_length_bytes(uint32_t type)
-{
-  if (type == HA_KEYTYPE_VARTEXT1
-          || type == HA_KEYTYPE_VARBINARY1)
-    return 1;
-  if (type == HA_KEYTYPE_VARTEXT2
-          || type == HA_KEYTYPE_VARBINARY2)
-    return 2;
-  return 0;
 }
 
 // write_row() inserts a row. No extra() hint is given currently if a bulk load
@@ -1548,6 +1688,14 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
             length = key_part->length;
             break;
           case 1:
+            length = *(uint16_t *)p;
+            // append the length if it's a multi-part key
+            if (key_parts > 1) {
+              key_arena.push_back((uint8_t)length);
+              key.size += 1;
+            }
+            p += 2;
+            break;
           case 2:
             length = *(uint16_t *)p;
             // append the length if it's a multi-part key
@@ -1562,7 +1710,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
         // append the key data
         key_arena.insert(key_arena.end(), p, p + length);
         key.size += length;
-        p += length;
+        p += key_part->length;
       }
 
       key.data = key_arena.data();
@@ -1579,23 +1727,18 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
         }
         break;
       case HA_READ_KEY_OR_NEXT:
-        assert(table->key_info[active_index].user_defined_key_parts == 1);
         st = ups_cursor_find(cursor, &key, &record, UPS_FIND_GEQ_MATCH);
         break;
       case HA_READ_KEY_OR_PREV:
-        assert(table->key_info[active_index].user_defined_key_parts == 1);
         st = ups_cursor_find(cursor, &key, &record, UPS_FIND_LEQ_MATCH);
         break;
       case HA_READ_AFTER_KEY:
-        assert(table->key_info[active_index].user_defined_key_parts == 1);
         st = ups_cursor_find(cursor, &key, &record, UPS_FIND_GT_MATCH);
         break;
       case HA_READ_BEFORE_KEY:
-        assert(table->key_info[active_index].user_defined_key_parts == 1);
         st = ups_cursor_find(cursor, &key, &record, UPS_FIND_LT_MATCH);
         break;
       case HA_READ_INVALID: // (last)
-        assert(table->key_info[active_index].user_defined_key_parts == 1);
         st = ups_cursor_move(cursor, 0, &record, UPS_CURSOR_LAST);
         break;
       default:

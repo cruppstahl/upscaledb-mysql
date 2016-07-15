@@ -411,43 +411,60 @@ o run more tests
     x engines/funcs.tc_temporary_column_length
     x engines/funcs.tr_update
     x engines/funcs.tr_update_after_error
+    x engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
+    x engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
 
-    o engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
-    o engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
-
-o should we fix the sort order for variable-length compound keys?
+x should we fix the sort order for variable-length compound keys?
     the compare function should ignore the encoded lengths
-
-o make sure that wordpress works
+    -> done, it was required for some of the tests
 
 x implement UpscaledbHandler::delete_all_rows()
 x implement UpscaledbHandler::truncate()
 x implementint ha_heap::reset_auto_increment(ulonglong value)
-o implement UpscaledbHandler::records_in_range()
-o implement UpscaledbHandler::records() (does this make things faster??)
-o implement UpscaledbHandler::extra()
-o implement UpscaledbHandler::info()
-o implement UpscaledbHandler::start_bulk_*() ???
-o implement all other missing functions
 
-o temporary tables: automatically disable journalling
+x temporary tables: automatically disable journalling
     sql/table.cc:3313
     db_stat & HA_OPEN_TEMPORARY ? HA_OPEN_TMP_TABLE ...
 
-o support additional flags
-    o crc32
-        m_create_info->used_fields & HA_CREATE_USED_CHECKSUM (handler.h)
-    o compression for records
-        m_create_info->used_fields & HA_CREATE_USED_COMPRESS (handler.h)
-    o cache size
-    o in-memory environment
-    o disable journalling (or transactions?)
-    o integer compression for indices
+o the iuds test suite has many failures
+    o engines/iuds.strings_charsets_update_delete
+        -- segfaults in unpack_record b/c of buffer overrun
+        -- try again with valgrind, and come up with a reproducible snippet.
+    o engines/iuds.delete_year
+    o engines/iuds.delete_decimal
+    o engines/iuds.delete_time
+    o engines/iuds.strings_update_delete
+    o engines/iuds.type_bit_iuds
+    o engines/iuds.update_decimal
+    o engines/iuds.insert_calendar
+    o engines/iuds.update_delete_calendar
+    o engines/iuds.insert_decimal
+    o engines/iuds.update_delete_number
+    o engines/iuds.insert_number
+    o engines/iuds.update_time
+    o engines/iuds.insert_time
+    o engines/iuds.update_year
+    o engines/iuds.insert_year
 
+o support additional flags
     o store run-time configuration in a .properties file in the
         table's directory (i.e. ${table-name}.properties); this is flexible
         enough for all run-time options that will come
         o use mysql's ini file format (and parser, if possible)
+    o per-environment options
+        o crc32
+            m_create_info->used_fields & HA_CREATE_USED_CHECKSUM (handler.h)
+        o compression for records
+            m_create_info->used_fields & HA_CREATE_USED_COMPRESS (handler.h)
+        o cache size
+        o page size
+        o file size limit
+        o in-memory environment
+        o disable journalling
+    o be careful w/ ALTER TABLE; it creates a temporary database with a
+        different name.
+
+o enable integer compression for indices
 
 o use upsserver to access the environment remotely
     o only if enabled in the configuration
@@ -458,7 +475,9 @@ o use upsserver to access the environment remotely
 o we need a "version" indicator, in case we will change the data format in the
     future
 
-o run other test suites
+o make sure that wordpress works
+
+o run the "iuds" test suite
 
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
@@ -483,6 +502,12 @@ o identify the 3 most commonly used MySQL operations in Wordpress; use
     the API instead and see if it improves performance
     -> can we move this to a wordpress plugin??
 
+o implement UpscaledbHandler::records_in_range()
+o implement UpscaledbHandler::records() (does this make things faster??)
+o implement UpscaledbHandler::extra()
+o implement UpscaledbHandler::info()
+o implement UpscaledbHandler::start_bulk_*() ???
+
 o public release ---------------------------------------------------------
 
 . CREATE TABLE (id integer primary key) -> does not have to store any
@@ -494,6 +519,9 @@ o secondary keys should not require a lookup of the primary key;
 
 o investigate "item condition pushdown" - it helps with long table scans;
     basically it's the predicate filtering for non-indexed columns
+
+o online DDL:
+    http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
 
 o check out code path of a SELECT statement; can we provide a shortcut, and
     use UQI transparently??
