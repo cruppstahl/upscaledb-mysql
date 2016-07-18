@@ -802,9 +802,8 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
     if (key_info->actual_flags & HA_NOSAME)
       enable_duplicates = false;
 
-    // If there is only one key, and it is unique: pretend that it's
-    // the primary key!
-    if (num_indices == 1 && enable_duplicates == false)
+    // If there is only one key then pretend that it's the primary key
+    if (num_indices == 1)
       is_primary_key = true;
 
     if (is_primary_key)
@@ -998,9 +997,8 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     if (key_info->actual_flags & HA_NOSAME)
       enable_duplicates = false;
 
-    // If there is only one key, and it is unique: pretend that it's
-    // the primary key!
-    if (num_indices == 1 && enable_duplicates == false)
+    // If there is only one key then pretend that it's the primary key!
+    if (num_indices == 1)
       is_primary_key = true;
 
     if (is_primary_key) {
@@ -1095,6 +1093,8 @@ insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
   // key is unique, and we can specify the flag UPS_OVERWRITE (which is much
   // faster)
   uint32_t flags = 0;
+  if (likely(dbdesc->enable_duplicates))
+    flags = UPS_DUPLICATE;
   if (dbdesc->max_key_cache->compare_and_update(&key)) {
     assert(!key_exists(dbdesc->db, &key));
     flags = UPS_OVERWRITE;
@@ -1673,7 +1673,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
     // otherwise we have to unpack the row and transform it into the
     // correct format
     else {
-      const uint8_t *p = keybuf;
+      const uint8_t *p = keybuf + key_part->offset;
       key_arena.clear();
       uint32_t key_parts = table->key_info[active_index].user_defined_key_parts;
 
@@ -1833,7 +1833,8 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
       rec.data = buf;
       rec.flags = UPS_RECORD_USER_ALLOC;
     }
-    st = ups_db_find(share->dbmap[0].db, 0, &key, &rec, 0); // or autoidx.db??
+    st = ups_db_find(share->autoidx.db ? share->autoidx.db : share->dbmap[0].db,
+                        0, &key, &rec, 0); // or autoidx.db??
     if (unlikely(st != 0))
       goto bail;
 

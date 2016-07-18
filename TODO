@@ -428,8 +428,12 @@ x temporary tables: automatically disable journalling
 
 o the iuds test suite has many failures
     o engines/iuds.strings_charsets_update_delete
-        -- segfaults in unpack_record b/c of buffer overrun
-        -- try again with valgrind, and come up with a reproducible snippet.
+        -- select * from t8 where a like 'uu%';
+        -- calls index_read_map with a key which is strangely formatted.
+        -- track down in the caller where the key is created
+        -- (mrr_cur_range.start_key.key)
+        -- b handler::read_range_first
+        -- or check it out in innodb
     o engines/iuds.delete_year
     o engines/iuds.delete_decimal
     o engines/iuds.delete_time
