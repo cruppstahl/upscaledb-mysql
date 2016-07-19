@@ -444,14 +444,16 @@ x the iuds test suite has many failures
     x engines/iuds.type_bit_iuds
 
 o support additional flags
-    o per-environment options via a "CREATE TABLE" comment
-        o "enable_crc32=true|false"
-        o "enable_compression=snappy|zlib|lz4|none"
-        o "cache_size=unlimited|..."
-        o "page_size=..."
-        o "file_size_limit=..."
-        o "in_memory=true|false"
-        o "disable_journalling=true|false"
+    x per-environment options via a "CREATE TABLE" comment
+        x "enable_crc32=true|false"
+        x "disable_journalling=true|false"
+        x "in_memory=true|false"
+        x "enable_compression=snappy|zlib|lz4|none"
+        x "cache_size=unlimited|..."
+        x "page_size=..."
+        x "file_size_limit=..."
+    o need a way to print the status, i.e. via INFO()?
+        innobase_hton->show_status = innobase_show_status;
     o enable integer compression for indices via a "CREATE TABLE" comment
     o overwrite the cache size with an environment setting or a parameter
         (or a .cnf file?)
@@ -472,6 +474,7 @@ o run other benchmarks (TPC-C etc)
 o make sure that wordpress works
 o test and benchmark with wordpress
 o make sure that phpmyadmin runs fine
+o implement handler::check()
 
 o lots of documentation
     o need samples, i.e. with java and php

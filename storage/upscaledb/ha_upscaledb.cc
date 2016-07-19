@@ -22,13 +22,14 @@
 #include "ha_upscaledb.h"
 #include "probes_mysql.h"
 #include "sql_plugin.h"
+#include "parser.h"
 
 #include <ups/upscaledb_uqi.h>
+#include <ups/upscaledb_int.h>
 
 #include <boost/thread/mutex.hpp>
 #include <boost/filesystem.hpp>
-
-#include <ups/upscaledb_int.h>
+#include <boost/lexical_cast.hpp>
 
 // helper macros to improve CPU branch prediction
 #if defined __GNUC__
@@ -40,6 +41,110 @@
 #endif
 
 #define CUSTOM_COMPARE_NAME "varlencmp"
+
+struct EnvCommentList {
+  EnvCommentList()
+    : flags(0) {
+  }
+
+  bool add(std::string &key, std::string &value) {
+    if (key == "enable_crc32") {
+      if (value == "true") {
+        flags |= UPS_ENABLE_CRC32;
+        return true;
+      }
+      if (value == "false")
+        return true;
+      return false;
+    }
+
+    if (key == "disable_recovery") {
+      if (value == "true") {
+        flags |= UPS_DISABLE_RECOVERY;
+        return true;
+      }
+      if (value == "false")
+        return true;
+      return false;
+    }
+
+    if (key == "in_memory") {
+      if (value == "true") {
+        flags |= UPS_IN_MEMORY;
+        return true;
+      }
+      if (value == "false")
+        return true;
+      return false;
+    }
+
+    if (key == "enable_compression") {
+      if (value == "zlib") {
+        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_ZLIB};
+        params.push_back(p);
+        return true;
+      }
+      if (value == "snappy") {
+        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_SNAPPY};
+        params.push_back(p);
+        return true;
+      }
+      if (value == "lzf") {
+        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_LZF};
+        params.push_back(p);
+        return true;
+      }
+      if (value == "none")
+        return true;
+      return false;
+    }
+
+    if (key == "cache_size") {
+      if (value == "unlimited") {
+        flags |= UPS_CACHE_UNLIMITED;
+        return true;
+      }
+      try {
+        ups_parameter_t p = {UPS_PARAM_CACHE_SIZE,
+                boost::lexical_cast<uint32_t>(value)};
+        params.push_back(p);
+        return true;
+      }
+      catch (boost::bad_lexical_cast &) {
+        return false;
+      }
+    }
+
+    if (key == "page_size") {
+      try {
+        ups_parameter_t p = {UPS_PARAM_PAGE_SIZE,
+                boost::lexical_cast<uint32_t>(value)};
+        params.push_back(p);
+        return true;
+      }
+      catch (boost::bad_lexical_cast &) {
+        return false;
+      }
+    }
+
+    if (key == "file_size_limit") {
+      try {
+        ups_parameter_t p = {UPS_PARAM_FILE_SIZE_LIMIT,
+                boost::lexical_cast<uint32_t>(value)};
+        params.push_back(p);
+        return true;
+      }
+      catch (boost::bad_lexical_cast &) {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  uint32_t flags;
+  std::vector<ups_parameter_t> params;
+};
 
 struct CreateInfo {
   CreateInfo(HA_CREATE_INFO *ci)
@@ -904,8 +1009,25 @@ UpscaledbHandler::create(const char *name, TABLE *table,
 
   UpscaledbShare tmpshare;
   std::string env_name = format_environment_name(name);
+
+  EnvCommentList parse_sink;
+
+  if (create_info->comment.length > 0) {
+    if (!parse_comment_list(create_info->comment.str, parse_sink)) {
+      sql_print_error("Invalid \"CREATE TABLE\" comment");
+      DBUG_RETURN(1);
+    }
+    if (parse_sink.params.empty() == false) {
+      ups_parameter_t p = {0, 0};
+      parse_sink.params.push_back(p);
+    }
+  }
+
   ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
-                            UPS_ENABLE_TRANSACTIONS, 0644, 0);
+                            UPS_ENABLE_TRANSACTIONS | parse_sink.flags, 0644,
+                            parse_sink.params.empty() == false
+                                ? &parse_sink.params[0]
+                                : 0);
   if (st != 0) {
     log_error("ups_env_create", st);
     DBUG_RETURN(1);
