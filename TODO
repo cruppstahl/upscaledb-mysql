@@ -426,49 +426,35 @@ x temporary tables: automatically disable journalling
     sql/table.cc:3313
     db_stat & HA_OPEN_TEMPORARY ? HA_OPEN_TMP_TABLE ...
 
-o the iuds test suite has many failures
-    o engines/iuds.strings_charsets_update_delete
-        -- select * from t8 where a like 'uu%';
-        -- calls index_read_map with a key which is strangely formatted.
-        -- track down in the caller where the key is created
-        -- (mrr_cur_range.start_key.key)
-        -- b handler::read_range_first
-        -- or check it out in innodb
-    o engines/iuds.delete_year
-    o engines/iuds.delete_decimal
-    o engines/iuds.delete_time
-    o engines/iuds.strings_update_delete
-    o engines/iuds.type_bit_iuds
-    o engines/iuds.update_decimal
-    o engines/iuds.insert_calendar
-    o engines/iuds.update_delete_calendar
-    o engines/iuds.insert_decimal
-    o engines/iuds.update_delete_number
-    o engines/iuds.insert_number
-    o engines/iuds.update_time
-    o engines/iuds.insert_time
-    o engines/iuds.update_year
-    o engines/iuds.insert_year
+x the iuds test suite has many failures
+    x engines/iuds.strings_update_delete
+    x engines/iuds.delete_year
+    x engines/iuds.delete_decimal
+    x engines/iuds.delete_time
+    x engines/iuds.update_decimal
+    x engines/iuds.update_time
+    x engines/iuds.update_year
+    x engines/iuds.insert_number
+    x engines/iuds.insert_year
+    x engines/iuds.insert_time
+    x engines/iuds.insert_calendar
+    x engines/iuds.insert_decimal
+    x engines/iuds.update_delete_calendar
+    x engines/iuds.update_delete_number
+    x engines/iuds.type_bit_iuds
 
 o support additional flags
-    o store run-time configuration in a .properties file in the
-        table's directory (i.e. ${table-name}.properties); this is flexible
-        enough for all run-time options that will come
-        o use mysql's ini file format (and parser, if possible)
-    o per-environment options
-        o crc32
-            m_create_info->used_fields & HA_CREATE_USED_CHECKSUM (handler.h)
-        o compression for records
-            m_create_info->used_fields & HA_CREATE_USED_COMPRESS (handler.h)
-        o cache size
-        o page size
-        o file size limit
-        o in-memory environment
-        o disable journalling
-    o be careful w/ ALTER TABLE; it creates a temporary database with a
-        different name.
-
-o enable integer compression for indices
+    o per-environment options via a "CREATE TABLE" comment
+        o "enable_crc32=true|false"
+        o "enable_compression=snappy|zlib|lz4|none"
+        o "cache_size=unlimited|..."
+        o "page_size=..."
+        o "file_size_limit=..."
+        o "in_memory=true|false"
+        o "disable_journalling=true|false"
+    o enable integer compression for indices via a "CREATE TABLE" comment
+    o overwrite the cache size with an environment setting or a parameter
+        (or a .cnf file?)
 
 o use upsserver to access the environment remotely
     o only if enabled in the configuration
@@ -477,16 +463,13 @@ o use upsserver to access the environment remotely
         layers are ignored)
 
 o we need a "version" indicator, in case we will change the data format in the
-    future
-
-o make sure that wordpress works
-
-o run the "iuds" test suite
+    future. use a counter in the filename, i.e. "$table.ups00"
 
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
     https://www.percona.com/forums/questions-discussions/mysql-and-percona-server/10501-help-with-tpcc-and-mysql
 
+o make sure that wordpress works
 o test and benchmark with wordpress
 o make sure that phpmyadmin runs fine
 
@@ -496,6 +479,19 @@ o lots of documentation
     o how to improve performance
         -> fixed length better than variable length,
             unique better than non-unique etc
+
+o engines/iuds.strings_charsets_update_delete
+    -- select * from t8 where a like 'uu%';
+    -- index_read_map locates the second key via approx. matching. The
+        first key is not a match because it starts with a 'U' instead
+        of a 'u'.
+    -- however, the mysql collation is case-insensitive and therefore
+        includes 'U'!
+    -- have to compare using the collation of the current field, if there
+        is one; if necessary, move the cursor "to the left"
+    -- or postpone for index condition pushdown!? when removing the
+        collation, everything works; document this!
+
 
 o second release (beta) --------------------------------------------------
 

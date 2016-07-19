@@ -1673,7 +1673,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
     // otherwise we have to unpack the row and transform it into the
     // correct format
     else {
-      const uint8_t *p = keybuf + key_part->offset;
+      const uint8_t *p = keybuf;
       key_arena.clear();
       uint32_t key_parts = table->key_info[active_index].user_defined_key_parts;
 
