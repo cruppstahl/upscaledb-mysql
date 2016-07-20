@@ -15,6 +15,8 @@
  * See the file COPYING for License information.
  */
 
+#include <fstream>
+
 #define MYSQL_SERVER
 #include "sql_class.h"           // MYSQL_HANDLERTON_INTERFACE_VERSION
 
@@ -29,7 +31,6 @@
 
 #include <boost/thread/mutex.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/lexical_cast.hpp>
 
 // helper macros to improve CPU branch prediction
 #if defined __GNUC__
@@ -41,110 +42,6 @@
 #endif
 
 #define CUSTOM_COMPARE_NAME "varlencmp"
-
-struct EnvCommentList {
-  EnvCommentList()
-    : flags(0) {
-  }
-
-  bool add(std::string &key, std::string &value) {
-    if (key == "enable_crc32") {
-      if (value == "true") {
-        flags |= UPS_ENABLE_CRC32;
-        return true;
-      }
-      if (value == "false")
-        return true;
-      return false;
-    }
-
-    if (key == "disable_recovery") {
-      if (value == "true") {
-        flags |= UPS_DISABLE_RECOVERY;
-        return true;
-      }
-      if (value == "false")
-        return true;
-      return false;
-    }
-
-    if (key == "in_memory") {
-      if (value == "true") {
-        flags |= UPS_IN_MEMORY;
-        return true;
-      }
-      if (value == "false")
-        return true;
-      return false;
-    }
-
-    if (key == "enable_compression") {
-      if (value == "zlib") {
-        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_ZLIB};
-        params.push_back(p);
-        return true;
-      }
-      if (value == "snappy") {
-        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_SNAPPY};
-        params.push_back(p);
-        return true;
-      }
-      if (value == "lzf") {
-        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_LZF};
-        params.push_back(p);
-        return true;
-      }
-      if (value == "none")
-        return true;
-      return false;
-    }
-
-    if (key == "cache_size") {
-      if (value == "unlimited") {
-        flags |= UPS_CACHE_UNLIMITED;
-        return true;
-      }
-      try {
-        ups_parameter_t p = {UPS_PARAM_CACHE_SIZE,
-                boost::lexical_cast<uint32_t>(value)};
-        params.push_back(p);
-        return true;
-      }
-      catch (boost::bad_lexical_cast &) {
-        return false;
-      }
-    }
-
-    if (key == "page_size") {
-      try {
-        ups_parameter_t p = {UPS_PARAM_PAGE_SIZE,
-                boost::lexical_cast<uint32_t>(value)};
-        params.push_back(p);
-        return true;
-      }
-      catch (boost::bad_lexical_cast &) {
-        return false;
-      }
-    }
-
-    if (key == "file_size_limit") {
-      try {
-        ups_parameter_t p = {UPS_PARAM_FILE_SIZE_LIMIT,
-                boost::lexical_cast<uint32_t>(value)};
-        params.push_back(p);
-        return true;
-      }
-      catch (boost::bad_lexical_cast &) {
-        return false;
-      }
-    }
-
-    return false;
-  }
-
-  uint32_t flags;
-  std::vector<ups_parameter_t> params;
-};
 
 struct CreateInfo {
   CreateInfo(HA_CREATE_INFO *ci)
@@ -374,19 +271,6 @@ log_error_impl(const char *file, int line, const char *function,
 {
   sql_print_error("%s[%d] %s: failed with error %d (%s)", file, line,
                   function, st, ups_strerror(st));
-}
-
-static inline uint64_t
-read_cache_size_from_env()
-{
-  uint64_t cs = 0;
-  const char *env = ::getenv("UPSCALEDB_CACHE_SIZE");
-  if (env)
-    cs = ::strtoull(env, 0, 0);
-  if (!cs)
-    cs = 128 * 1024 * 1024;
-  sql_print_information("upscaledb: cache size is %lu", cs);
-  return cs;
 }
 
 static handler *
@@ -1010,23 +894,23 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   UpscaledbShare tmpshare;
   std::string env_name = format_environment_name(name);
 
-  EnvCommentList parse_sink;
-
+  // parse the configuration settings in the table's COMMENT
+  EnvCommentList config;
   if (create_info->comment.length > 0) {
-    if (!parse_comment_list(create_info->comment.str, parse_sink)) {
+    if (!parse_comment_list(create_info->comment.str, config)) {
       sql_print_error("Invalid \"CREATE TABLE\" comment");
       DBUG_RETURN(1);
     }
-    if (parse_sink.params.empty() == false) {
-      ups_parameter_t p = {0, 0};
-      parse_sink.params.push_back(p);
-    }
   }
 
+  // write the settings to the configuration file; the user can then
+  // modify them
+  write_configuration_settings(env_name, create_info->comment.str, config);
+
   ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
-                            UPS_ENABLE_TRANSACTIONS | parse_sink.flags, 0644,
-                            parse_sink.params.empty() == false
-                                ? &parse_sink.params[0]
+                            config.flags, 0644,
+                            config.params.empty() == false
+                                ? &config.params[0]
                                 : 0);
   if (st != 0) {
     log_error("ups_env_create", st);
@@ -1073,27 +957,29 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   std::string env_name = format_environment_name(name);
 
-  uint64_t cache_size = read_cache_size_from_env();
-  ups_parameter_t params[] = {
-      {UPS_PARAM_CACHE_SIZE, cache_size},
-      {0, 0}
-  };
-
-  uint32_t flags = 0;
+  // parse the configuration settings in the table's .cnf file
+  EnvCommentList config;
+  if (!parse_file(env_name.c_str(), config)) {
+    sql_print_error("Invalid configuration file '%s.cnf'", env_name.c_str());
+    DBUG_RETURN(1);
+  }
 
   // Temporary databases are opened in memory; read-only databases are
   // opened in read-only mode
   if (mode & O_RDONLY)
-    flags |= UPS_READ_ONLY;
+    config.flags |= UPS_READ_ONLY;
   if (mode & HA_OPEN_TMP_TABLE)
-    flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
+    config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
   else
-    flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
+    config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
 
   // open the Environment
   recovery_table = table;
   ups_status_t st = ups_env_open(&share->env, env_name.c_str(),
-                                flags, &params[0]);
+                                config.flags,
+                                config.params.empty() == false
+                                    ? &config.params[0]
+                                    : 0);
   if (unlikely(st != 0)) {
     log_error("ups_env_open", st);
     DBUG_RETURN(1);

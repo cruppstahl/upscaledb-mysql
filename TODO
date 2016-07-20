@@ -444,28 +444,33 @@ x the iuds test suite has many failures
     x engines/iuds.type_bit_iuds
 
 o support additional flags
-    x per-environment options via a "CREATE TABLE" comment
-        x "enable_crc32=true|false"
-        x "disable_journalling=true|false"
-        x "in_memory=true|false"
+    x per-environment options via a "CREATE TABLE" comment in ::create()
         x "enable_compression=snappy|zlib|lz4|none"
-        x "cache_size=unlimited|..."
         x "page_size=..."
-        x "file_size_limit=..."
-    o need a way to print the status, i.e. via INFO()?
-        innobase_hton->show_status = innobase_show_status;
-    o enable integer compression for indices via a "CREATE TABLE" comment
-    o overwrite the cache size with an environment setting or a parameter
-        (or a .cnf file?)
+        x write all options to a file
+    o per-environment options via a "CREATE TABLE" comment in ::open()
+        o read all options from a file
+            -> added, but not yet tested
+        o "disable_recovery=true|false"
+        o "file_size_limit=..."
+        o "enable_crc32=true|false"
+        o "cache_size=unlimited|..."
+    o print the whole configuration to stdout
+    o delete the config file when the table is dropped!?
+    o rename the config file when the table is renamed!?
+    o per-index options via a "CREATE TABLE" comment
+        o integer compression
+        o record compression (only for the primary index! but read from
+            table comment!)
 
 o use upsserver to access the environment remotely
     o only if enabled in the configuration
+        ("enable_server=true;server_port=123")
     o only bind to localhost; allow others through the config file
-    o document the security problems of this approach (all MySQL security
-        layers are ignored)
 
 o we need a "version" indicator, in case we will change the data format in the
     future. use a counter in the filename, i.e. "$table.ups00"
+    o is there an error code that we can return?
 
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
@@ -482,8 +487,13 @@ o lots of documentation
     o how to improve performance
         -> fixed length better than variable length,
             unique better than non-unique etc
+    o (upsserver) document the security problems of this approach (all
+        MySQL security layers are ignored)
 
-o engines/iuds.strings_charsets_update_delete
+. need a way to print the status, i.e. via INFO()?
+    innobase_hton->show_status = innobase_show_status;
+
+. engines/iuds.strings_charsets_update_delete
     -- select * from t8 where a like 'uu%';
     -- index_read_map locates the second key via approx. matching. The
         first key is not a match because it starts with a 'U' instead
@@ -495,6 +505,9 @@ o engines/iuds.strings_charsets_update_delete
     -- or postpone for index condition pushdown!? when removing the
         collation, everything works; document this!
 
+. allow in-memory environments (comment option: "in_memory=true|false")
+    currently would not work because ::create() closes the Environment,
+    ::open() opens it. In-memory environments have to remain open!
 
 o second release (beta) --------------------------------------------------
 
