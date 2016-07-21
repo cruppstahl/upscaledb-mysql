@@ -24,6 +24,7 @@
 #include "thr_lock.h"                    /* THR_LOCK, THR_LOCK_DATA */
 #include "handler.h"                     /* handler */
 #include "my_base.h"                     /* ha_rows */
+#include "configuration.h"
 
 typedef std::vector<uint8_t> ByteVector;
 
@@ -102,6 +103,9 @@ struct UpscaledbShare : public Handler_share {
 
   // length of the |ref| length indicator
   uint32_t ref_length;
+
+  // The configuration, as specified in the COMMENT and the .cnf file
+  Configuration config;
 };
 
 struct UpscaledbHandler : handler {

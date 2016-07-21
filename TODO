@@ -352,7 +352,7 @@ x what if an index is created or a column with an index is dropped
     will no longer match
     -> not a problem
 
-o run more tests
+x run more tests
     -> MTR_MAX_TEST_FAIL=1000 ./mysql-test-run.pl --force --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so --mysqld=--default-tmp-storage-engine=upscaledb engines/funcs.crash_manyindexes_number
 
     x engines/funcs.ai_sql_auto_is_null
@@ -443,34 +443,36 @@ x the iuds test suite has many failures
     x engines/iuds.update_delete_number
     x engines/iuds.type_bit_iuds
 
-o support additional flags
+x support additional configuration settings
     x per-environment options via a "CREATE TABLE" comment in ::create()
         x "enable_compression=snappy|zlib|lz4|none"
         x "page_size=..."
         x write all options to a file
-    o per-environment options via a "CREATE TABLE" comment in ::open()
-        o read all options from a file
-            -> added, but not yet tested
-        o "disable_recovery=true|false"
-        o "file_size_limit=..."
-        o "enable_crc32=true|false"
-        o "cache_size=unlimited|..."
-    o print the whole configuration to stdout
-    o delete the config file when the table is dropped!?
-    o rename the config file when the table is renamed!?
-    o per-index options via a "CREATE TABLE" comment
-        o integer compression
-        o record compression (only for the primary index! but read from
-            table comment!)
+    x per-environment options via a "CREATE TABLE" comment in ::open()
+        x read all options from a file
+        x "disable_recovery=true|false"
+        x "file_size_limit=..."
+        x "enable_crc32=true|false"
+        x "cache_size=unlimited|..."
+    x print more errors if parser fails
+    x delete the config file when the table is dropped
+    x rename the config file when the table is renamed? (yes, but only if
+        the file does not exist?)
+    x make sure that "ALTER TABLE" works correctly
+    x enable record compression (primary index!)
 
 o use upsserver to access the environment remotely
     o only if enabled in the configuration
         ("enable_server=true;server_port=123")
-    o only bind to localhost; allow others through the config file
+    o if a server already exists for that port: attach env to it
+    o otherwise create a new server with that port
+    o only bind to localhost; allow other interfaces through the config file?
+    o make sure that ups_info and ups_dump work
 
 o we need a "version" indicator, in case we will change the data format in the
     future. use a counter in the filename, i.e. "$table.ups00"
-    o is there an error code that we can return?
+    o is there an error code that we can return if we open an incompatible
+        version?
 
 o run other benchmarks (TPC-C etc)
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
@@ -479,19 +481,38 @@ o run other benchmarks (TPC-C etc)
 o make sure that wordpress works
 o test and benchmark with wordpress
 o make sure that phpmyadmin runs fine
-o implement handler::check()
 
 o lots of documentation
-    o need samples, i.e. with java and php
+    o release 2.2.1, it's a dependency!
     o installation for various operating systems
+    o describe the configuration settings
     o how to improve performance
         -> fixed length better than variable length,
             unique better than non-unique etc
     o (upsserver) document the security problems of this approach (all
         MySQL security layers are ignored)
+    o give a short sample how to use the embedded API
+    o collations and charsets do not yet work as expected
 
-. need a way to print the status, i.e. via INFO()?
+o second release (beta) --------------------------------------------------
+
+o stabilize/fix upcoming bugs
+o lots of PR
+o simplify installation a lot; provide packages for the major distributions
+
+o identify the 3 most commonly used MySQL operations in Wordpress; use
+    the API instead and see if it improves performance
+    -> can we move this to a wordpress plugin??
+
+o implement UpscaledbHandler::records_in_range()
+o implement UpscaledbHandler::records() (does this make things faster??)
+o implement UpscaledbHandler::extra()
+o implement UpscaledbHandler::info()
     innobase_hton->show_status = innobase_show_status;
+    -> print info of each environment and of each server, including all
+        configuration parameters (page size, cache size etc)
+o implement UpscaledbHandler::start_bulk_*() ???
+o implement handler::check()
 
 . engines/iuds.strings_charsets_update_delete
     -- select * from t8 where a like 'uu%';
@@ -505,24 +526,13 @@ o lots of documentation
     -- or postpone for index condition pushdown!? when removing the
         collation, everything works; document this!
 
+. per-index options via a "CREATE TABLE" comment
+    o integer compression -> this will only work on unique indices!?
+
 . allow in-memory environments (comment option: "in_memory=true|false")
     currently would not work because ::create() closes the Environment,
     ::open() opens it. In-memory environments have to remain open!
 
-o second release (beta) --------------------------------------------------
-
-o stabilize/fix upcoming bugs
-o lots of PR
-o etc
-o identify the 3 most commonly used MySQL operations in Wordpress; use
-    the API instead and see if it improves performance
-    -> can we move this to a wordpress plugin??
-
-o implement UpscaledbHandler::records_in_range()
-o implement UpscaledbHandler::records() (does this make things faster??)
-o implement UpscaledbHandler::extra()
-o implement UpscaledbHandler::info()
-o implement UpscaledbHandler::start_bulk_*() ???
 
 o public release ---------------------------------------------------------
 

@@ -24,7 +24,6 @@
 #include "ha_upscaledb.h"
 #include "probes_mysql.h"
 #include "sql_plugin.h"
-#include "parser.h"
 
 #include <ups/upscaledb_uqi.h>
 #include <ups/upscaledb_int.h>
@@ -759,7 +758,8 @@ delete_all_databases(UpscaledbShare *share, TABLE *table)
 }
 
 static ups_status_t
-create_all_databases(UpscaledbShare *share, TABLE *table)
+create_all_databases(UpscaledbShare *share, TABLE *table,
+                Configuration *config)
 {
   ups_db_t *db;
   int num_indices = table->s->keys;
@@ -810,6 +810,8 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
         {0, 0},
         {0, 0},
         {0, 0},
+        {0, 0},
+        {0, 0},
         {0, 0}
     };
 
@@ -847,6 +849,13 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
       p++;
     }
 
+    // is record compression enabled?
+    if (is_primary_key && config->record_compression) {
+      params[p].name = UPS_PARAM_RECORD_COMPRESSION;
+      params[p].value = config->record_compression;
+      p++;
+    }
+
     ups_status_t st = ups_env_create_db(share->env, &db, dbname(i),
                                 flags, params);
     if (unlikely(st != 0)) {
@@ -861,8 +870,18 @@ create_all_databases(UpscaledbShare *share, TABLE *table)
 
   // no primary index? then create a record-number database
   if (!has_primary_index) {
+    ups_parameter_t params[] = {
+      {0, 0},
+      {0, 0}
+    };
+
+    if (config->record_compression) {
+      params[0].name = UPS_PARAM_RECORD_COMPRESSION;
+      params[0].value = config->record_compression;
+    }
+
     ups_status_t st = ups_env_create_db(share->env, &db, 1,
-                                UPS_RECORD_NUMBER32, 0);
+                                UPS_RECORD_NUMBER32, &params[0]);
     if (unlikely(st != 0)) {
       log_error("ups_env_create_db", st);
       return st;
@@ -895,9 +914,9 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   std::string env_name = format_environment_name(name);
 
   // parse the configuration settings in the table's COMMENT
-  EnvCommentList config;
+  share->config = Configuration(false);
   if (create_info->comment.length > 0) {
-    if (!parse_comment_list(create_info->comment.str, config)) {
+    if (!parse_comment_list(create_info->comment.str, share->config)) {
       sql_print_error("Invalid \"CREATE TABLE\" comment");
       DBUG_RETURN(1);
     }
@@ -905,12 +924,13 @@ UpscaledbHandler::create(const char *name, TABLE *table,
 
   // write the settings to the configuration file; the user can then
   // modify them
-  write_configuration_settings(env_name, create_info->comment.str, config);
+  write_configuration_settings(env_name, create_info->comment.str,
+                  share->config);
 
   ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
-                            config.flags, 0644,
-                            config.params.empty() == false
-                                ? &config.params[0]
+                            share->config.flags, 0644,
+                            share->config.params.empty() == false
+                                ? &share->config.params[0]
                                 : 0);
   if (st != 0) {
     log_error("ups_env_create", st);
@@ -918,7 +938,7 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   }
 
   // create a database for each index.
-  st = create_all_databases(&tmpshare, table);
+  st = create_all_databases(&tmpshare, table, &share->config);
 
   // close Environment and all databases - it will be opened again in
   // open()
@@ -958,8 +978,8 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   std::string env_name = format_environment_name(name);
 
   // parse the configuration settings in the table's .cnf file
-  EnvCommentList config;
-  if (!parse_file(env_name.c_str(), config)) {
+  share->config = Configuration(true);
+  if (!parse_file(env_name + ".cnf", share->config)) {
     sql_print_error("Invalid configuration file '%s.cnf'", env_name.c_str());
     DBUG_RETURN(1);
   }
@@ -967,18 +987,18 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   // Temporary databases are opened in memory; read-only databases are
   // opened in read-only mode
   if (mode & O_RDONLY)
-    config.flags |= UPS_READ_ONLY;
+    share->config.flags |= UPS_READ_ONLY;
   if (mode & HA_OPEN_TMP_TABLE)
-    config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
+    share->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
   else
-    config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
+    share->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
 
   // open the Environment
   recovery_table = table;
   ups_status_t st = ups_env_open(&share->env, env_name.c_str(),
-                                config.flags,
-                                config.params.empty() == false
-                                    ? &config.params[0]
+                                share->config.flags,
+                                share->config.params.empty() == false
+                                    ? &share->config.params[0]
                                     : 0);
   if (unlikely(st != 0)) {
     log_error("ups_env_open", st);
@@ -2158,7 +2178,6 @@ UpscaledbHandler::extra(enum ha_extra_function operation)
 // Track how often this is used; implement a custom delete function (resetting
 // root page, moving all pages to the freelist - or dropping the database
 // and re-creating it - but this is currently not transactional)
-// TODO TODO TODO
 int
 UpscaledbHandler::delete_all_rows()
 {
@@ -2172,7 +2191,7 @@ UpscaledbHandler::delete_all_rows()
     DBUG_RETURN(1);
   }
 
-  st = create_all_databases(share, table);
+  st = create_all_databases(share, table, &share->config);
   if (unlikely(st)) {
     log_error("create_all_databases", st);
     DBUG_RETURN(1);
@@ -2269,6 +2288,7 @@ UpscaledbHandler::delete_table(const char *name)
   (void)boost::filesystem::remove(env_name);
   (void)boost::filesystem::remove(env_name + ".jrn0");
   (void)boost::filesystem::remove(env_name + ".jrn1");
+  (void)boost::filesystem::remove(env_name + ".cnf");
 
   DBUG_RETURN(0);
 }
@@ -2287,6 +2307,7 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   (void)boost::filesystem::rename(from_name, to_name);
   (void)boost::filesystem::rename(from_name + ".jrn0", to_name + ".jrn0");
   (void)boost::filesystem::rename(from_name + ".jrn1", to_name + ".jrn1");
+  (void)boost::filesystem::rename(from_name + ".cnf", to_name + ".cnf");
 
   DBUG_RETURN(0);
 }

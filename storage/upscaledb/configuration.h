@@ -26,14 +26,17 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 
-#define DEFAULT_CACHE_SIZE  (128 * 1024 * 1024)
+#define DEFAULT_CACHE_SIZE   (128 * 1024 * 1024)
+#define DEFAULT_SERVER_PORT  54123
 
 static bool
 parse_single_comment(std::string &token, std::string &key, std::string &value)
 {
   size_t pos;
-  if ((pos = token.find("=")) == std::string::npos)
+  if ((pos = token.find("=")) == std::string::npos) {
+    sql_print_error("Failed to parse '%s', '=' is missing", token.c_str());
     return false;
+  }
   key = token.substr(0, pos);
   value = token.substr(pos + 1);
   boost::trim(key);
@@ -55,17 +58,27 @@ parse_comment_list(const char *comment, T &sink)
   size_t next = 0;
   while ((next = s.find(";", last)) != std::string::npos) {
     std::string token = s.substr(last, next - last);
+    boost::trim(token);
     if (!parse_single_comment(token, key, value))
       return false;
-    if (!sink.add(key, value))
+    if (!sink.add(key, value)) {
+      sql_print_error("Invalid option '%s' => '%s'", key.c_str(),
+                      value.c_str());
       return false;
+    }
     last = next + 1;
   }
   std::string token = s.substr(last);
-  if (!parse_single_comment(token, key, value))
-    return false;
-  if (!sink.add(key, value))
-    return false;
+  boost::trim(token);
+  if (!token.empty()) {
+    if (!parse_single_comment(token, key, value))
+      return false;
+    if (!sink.add(key, value)) {
+      sql_print_error("Invalid option '%s' => '%s'", key.c_str(),
+                      value.c_str());
+      return false;
+    }
+  }
 
   sink.finalize();
 
@@ -74,32 +87,40 @@ parse_comment_list(const char *comment, T &sink)
 
 template<typename T>
 bool
-parse_file(const char *filename, T &sink)
+parse_file(const std::string &filename, T &sink)
 {
-  std::ifstream in(filename, std::ios::in | std::ios::binary);
-  if (!in)
-    return false;
+  std::ifstream in(filename.c_str(), std::ios::in | std::ios::binary);
+  if (!in) // file does not exist - not an error!
+    return true;
 
   std::string line, key, value;
   while (std::getline(in, line)) {
+    size_t comment = line.find("#");
+    if (comment != std::string::npos)
+      line.resize(comment);
+
     boost::trim(line);
 
-    if (line.size() == 0 || line[0] == '#')
+    if (line.size() == 0)
       continue;
 
     if (!parse_single_comment(line, key, value))
       return false;
-    if (!sink.add(key, value))
+    if (!sink.add(key, value)) {
+      sql_print_error("Invalid option '%s' => '%s'", key.c_str(),
+                      value.c_str());
       return false;
+    }
   }
   sink.finalize();
 
   return true;
 }
 
-struct EnvCommentList {
-  EnvCommentList()
-    : flags(UPS_ENABLE_TRANSACTIONS) {
+struct Configuration {
+  Configuration(bool is_open_ = false)
+    : is_open(is_open_), is_server_enabled(0), server_port(DEFAULT_SERVER_PORT),
+      flags(UPS_ENABLE_TRANSACTIONS), record_compression(0) {
   }
 
   bool add(std::string &key, std::string &value) {
@@ -110,6 +131,18 @@ struct EnvCommentList {
       }
       if (value == "false")
         return true;
+      return false;
+    }
+
+    if (key == "enable_server") {
+      if (value == "true") {
+        is_server_enabled = true;
+        return true;
+      }
+      if (value == "false") {
+        is_server_enabled = false;
+        return true;
+      }
       return false;
     }
 
@@ -136,19 +169,18 @@ struct EnvCommentList {
     */
 
     if (key == "enable_compression") {
+      if (is_open) // ignore when opening
+        return true;
       if (value == "zlib") {
-        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_ZLIB};
-        params.push_back(p);
+        record_compression = UPS_COMPRESSOR_ZLIB;
         return true;
       }
       if (value == "snappy") {
-        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_SNAPPY};
-        params.push_back(p);
+        record_compression = UPS_COMPRESSOR_SNAPPY;
         return true;
       }
       if (value == "lzf") {
-        ups_parameter_t p = {UPS_PARAM_RECORD_COMPRESSION, UPS_COMPRESSOR_LZF};
-        params.push_back(p);
+        record_compression = UPS_COMPRESSOR_SNAPPY;
         return true;
       }
       if (value == "none")
@@ -173,6 +205,8 @@ struct EnvCommentList {
     }
 
     if (key == "page_size") {
+      if (is_open) // ignore when opening
+        return true;
       try {
         ups_parameter_t p = {UPS_PARAM_PAGE_SIZE,
                 boost::lexical_cast<uint32_t>(value)};
@@ -189,6 +223,16 @@ struct EnvCommentList {
         ups_parameter_t p = {UPS_PARAM_FILE_SIZE_LIMIT,
                 boost::lexical_cast<uint32_t>(value)};
         params.push_back(p);
+        return true;
+      }
+      catch (boost::bad_lexical_cast &) {
+        return false;
+      }
+    }
+
+    if (key == "server_port") {
+      try {
+        server_port = boost::lexical_cast<uint16_t>(value);
         return true;
       }
       catch (boost::bad_lexical_cast &) {
@@ -219,13 +263,17 @@ struct EnvCommentList {
     params.push_back(p);
   }
 
+  bool is_open;
+  bool is_server_enabled;
+  uint16_t server_port;
   uint32_t flags;
+  uint32_t record_compression;
   std::vector<ups_parameter_t> params;
 };
 
 static void
 write_configuration_settings(std::string env_name, const char *comment,
-                EnvCommentList &list)
+                Configuration &list)
 {
   std::ofstream f;
   std::string fname = env_name + ".cnf";
@@ -275,5 +323,12 @@ write_configuration_settings(std::string env_name, const char *comment,
         break;
     }
   }
+
+  if (list.is_server_enabled)
+    f << "enable_server = true" << std::endl;
+  else
+    f << "enable_server = false" << std::endl;
+
+  f << "server_port = " << list.server_port << std::endl;
 }
 
