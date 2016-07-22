@@ -461,13 +461,13 @@ x support additional configuration settings
     x make sure that "ALTER TABLE" works correctly
     x enable record compression (primary index!)
 
-o use upsserver to access the environment remotely
-    o only if enabled in the configuration
+x use upsserver to access the environment remotely
+    x only if enabled in the configuration
         ("enable_server=true;server_port=123")
-    o if a server already exists for that port: attach env to it
-    o otherwise create a new server with that port
-    o only bind to localhost; allow other interfaces through the config file?
-    o make sure that ups_info and ups_dump work
+    x if a server already exists for that port: attach env to it
+    x otherwise create a new server with that port
+    x make sure that ups_info and ups_dump work
+    x detach the environment if it is closed (-> close_and_remove_env)
 
 o we need a "version" indicator, in case we will change the data format in the
     future. use a counter in the filename, i.e. "$table.ups00"
@@ -475,8 +475,8 @@ o we need a "version" indicator, in case we will change the data format in the
         version?
 
 o run other benchmarks (TPC-C etc)
+    https://github.com/Percona-Lab/tpcc-mysql
     https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
-    https://www.percona.com/forums/questions-discussions/mysql-and-percona-server/10501-help-with-tpcc-and-mysql
 
 o make sure that wordpress works
 o test and benchmark with wordpress

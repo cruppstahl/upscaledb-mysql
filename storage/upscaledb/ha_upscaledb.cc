@@ -27,6 +27,7 @@
 
 #include <ups/upscaledb_uqi.h>
 #include <ups/upscaledb_int.h>
+#include <ups/upscaledb_srv.h>
 
 #include <boost/thread/mutex.hpp>
 #include <boost/filesystem.hpp>
@@ -147,6 +148,9 @@ custom_compare_func(ups_db_t *db, const uint8_t *lhs, uint32_t lhs_length,
   return 0;
 }
 
+static std::map<uint16_t, ups_srv_t *> servers;
+static boost::mutex servers_mutex;
+
 static std::map<std::string, ups_env_t *> environments;
 static boost::mutex environments_mutex;
 
@@ -249,10 +253,17 @@ store_env(const char *table_name, ups_env_t *env)
 }
 
 static inline void
-close_and_remove_env(const char *table_name)
+close_and_remove_env(const char *table_name, Configuration *config)
 {
-  boost::mutex::scoped_lock lock(environments_mutex);
+  boost::mutex::scoped_lock lock1(environments_mutex);
+  boost::mutex::scoped_lock lock2(servers_mutex);
   ups_env_t *env = environments[table_name];
+  ups_srv_t *srv = config ? servers[config->server_port] : 0;
+
+  // also remove the environment from a server
+  if (env && srv) {
+    (void)ups_srv_remove_env(srv, env);
+  }
 
   // close the environment
   if (env) {
@@ -892,6 +903,34 @@ create_all_databases(UpscaledbShare *share, TABLE *table,
   return 0;
 }
 
+static int
+attach_to_server(ups_env_t *env, const char *path, Configuration *config)
+{
+  ups_status_t st;
+  assert(config->is_server_enabled);
+
+  boost::mutex::scoped_lock lock(servers_mutex);
+  ups_srv_t *srv = servers[config->server_port];
+  if (!srv) {
+    ups_srv_config_t cfg;
+    ::memset(&cfg, 0, sizeof(cfg));
+    cfg.port = config->server_port;
+
+    st = ups_srv_init(&cfg, &srv);
+    if (unlikely(st != 0)) {
+      log_error("ups_srv_init", st);
+      return 1;
+    }
+    servers[config->server_port] = srv;
+  }
+  st = ups_srv_add_env(srv, env, path);
+  if (unlikely(st != 0)) {
+    log_error("ups_srv_add_env", st);
+    return 1;
+  }
+  return 0;
+}
+
 // |name|: full qualified name, i.e. "/database/table"
 // |table|: table info, field definitions
 // |create_info|: additional information about client, connection etc
@@ -905,7 +944,7 @@ UpscaledbHandler::create(const char *name, TABLE *table,
     share = allocate_or_get_share();
 
   // clean up any remaining handles
-  close_and_remove_env(name);
+  close_and_remove_env(name, share ? &share->config : 0);
 
   // create an Environment
   assert(share->env == 0);
@@ -973,7 +1012,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     ref_length = share->ref_length;
     DBUG_RETURN(0);
   }
-  close_and_remove_env(name);
+  close_and_remove_env(name, &share->config);
 
   std::string env_name = format_environment_name(name);
 
@@ -1076,6 +1115,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     share->ref_length = ref_length = sizeof(uint32_t);
     share->autoidx = DbDesc(db, 0, false, true);
   }
+
+  if (share->config.is_server_enabled)
+    DBUG_RETURN(attach_to_server(share->env, name + 1, // skip leading "."
+                            &share->config));
 
   DBUG_RETURN(0);
 }
@@ -2281,7 +2324,7 @@ UpscaledbHandler::delete_table(const char *name)
   DBUG_ENTER("UpscaledbHandler::delete_table");
 
   // remove the environment from the global cache
-  close_and_remove_env(name);
+  close_and_remove_env(name, share ? &share->config : 0);
 
   // delete all files
   std::string env_name = format_environment_name(name);
@@ -2299,7 +2342,7 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   DBUG_ENTER("UpscaledbHandler::rename_table ");
   close();
 
-  close_and_remove_env(from);
+  close_and_remove_env(from, share ? &share->config : 0);
   rename_create_info(from, to);
 
   std::string from_name = format_environment_name(from);
