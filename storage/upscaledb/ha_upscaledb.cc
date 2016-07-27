@@ -433,6 +433,8 @@ key_from_single_row(TABLE *table, const uchar *buf, KEY_PART_INFO *key_part)
 static inline ups_key_t
 key_from_row(TABLE *table, const uchar *buf, int index, ByteVector &arena)
 {
+  arena.clear();
+
   if (likely(table->key_info[index].user_defined_key_parts == 1))
     return key_from_single_row(table, buf, table->key_info[index].key_part);
 
@@ -591,6 +593,8 @@ pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
   assert(!row_is_fixed_length(table));
 
   uint8_t *src = buf;
+  arena.clear();
+  arena.reserve(1024);
   uint8_t *dst = arena.data();
 
   // copy the "null bytes" descriptors
@@ -607,6 +611,12 @@ pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
     if (type == MYSQL_TYPE_VARCHAR) {
       uint32_t len_bytes;
       extract_varchar_field_info(*field, &len_bytes, &size, src);
+
+      // make sure we have sufficient space
+      uint32_t pos = dst - arena.data();
+      arena.resize(arena.size() + size + len_bytes);
+      dst = &arena[pos];
+
       ::memcpy(dst, src, size + len_bytes);
       src += (*field)->pack_length();
       dst += size + len_bytes;
@@ -635,6 +645,12 @@ pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
     }
 
     size = (*field)->key_length();
+
+    // make sure we have sufficient space
+    uint32_t pos = dst - arena.data();
+    arena.resize(arena.size() + size);
+    dst = &arena[pos];
+
     ::memcpy(dst, src, size);
     src += size;
     dst += size;
