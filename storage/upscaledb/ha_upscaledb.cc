@@ -246,9 +246,8 @@ rename_create_info(const char *old_name, const char *new_name)
 }
 
 static inline void
-store_env(const char *table_name, ups_env_t *env)
+store_env_locked(const char *table_name, ups_env_t *env)
 {
-  boost::mutex::scoped_lock lock(environments_mutex);
   environments[table_name] = env;
 }
 
@@ -598,6 +597,7 @@ pack_record(TABLE *table, uint8_t *buf, ByteVector &arena)
   uint8_t *dst = arena.data();
 
   // copy the "null bytes" descriptors
+  arena.resize(table->s->null_bytes);
   for (uint32_t i = 0; i < table->s->null_bytes; i++) {
     *dst = *src;
     dst++;
@@ -1012,23 +1012,27 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   DBUG_ENTER("UpscaledbHandler::open");
 
   ups_register_compare(CUSTOM_COMPARE_NAME, custom_compare_func);
-
-  if (!share)
-    share = allocate_or_get_share();
-  else
-    assert(share->env == 0);
+  ups_set_committed_flush_threshold(30);
   record_arena.resize(table->s->rec_buff_length);
   ref_length = 0;
 
-  ups_set_committed_flush_threshold(30);
-
-  thr_lock_data_init(&share->lock, &lock_data, NULL);
-
-  if (share->env != 0) {
+  if (!share) {
+    share = allocate_or_get_share();
+    thr_lock_data_init(&share->lock, &lock_data, NULL);
+  }
+  else if (share->env != 0) {
     ref_length = share->ref_length;
     DBUG_RETURN(0);
   }
-  close_and_remove_env(name, &share->config);
+
+  //close_and_remove_env(name, &share->config);
+  boost::mutex::scoped_lock lock1(environments_mutex);
+
+  // it's possible that a different thread has opened the Environment in
+  // the meantime
+  share->env = environments[name];
+  if (share->env)
+    DBUG_RETURN(0);
 
   std::string env_name = format_environment_name(name);
 
@@ -1060,7 +1064,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     DBUG_RETURN(1);
   }
 
-  store_env(name, share->env);
+  store_env_locked(name, share->env);
 
   ups_db_t *db;
 
@@ -1814,9 +1818,11 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
         }
         break;
       case HA_READ_KEY_OR_NEXT:
+      case HA_READ_PREFIX:
         st = ups_cursor_find(cursor, &key, &record, UPS_FIND_GEQ_MATCH);
         break;
       case HA_READ_KEY_OR_PREV:
+      case HA_READ_PREFIX_LAST_OR_PREV:
         st = ups_cursor_find(cursor, &key, &record, UPS_FIND_LEQ_MATCH);
         break;
       case HA_READ_AFTER_KEY:
@@ -1829,6 +1835,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
         st = ups_cursor_move(cursor, 0, &record, UPS_CURSOR_LAST);
         break;
       default:
+        assert(!"shouldn't be here");
         st = UPS_INTERNAL_ERROR;
         break;
     }

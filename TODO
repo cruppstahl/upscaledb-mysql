@@ -474,10 +474,6 @@ o we need a "version" indicator, in case we will change the data format in the
     o is there an error code that we can return if we open an incompatible
         version?
 
-o run other benchmarks (TPC-C etc)
-    https://github.com/Percona-Lab/tpcc-mysql
-    https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
-
 o make sure that wordpress works
 o test and benchmark with wordpress
 o make sure that phpmyadmin runs fine
@@ -493,6 +489,7 @@ o lots of documentation
         MySQL security layers are ignored)
     o give a short sample how to use the embedded API
     o collations and charsets do not yet work as expected
+        (if they are case-insensitive - same as MyRocks)
 
 o second release (beta) --------------------------------------------------
 
@@ -513,6 +510,27 @@ o implement UpscaledbHandler::info()
         configuration parameters (page size, cache size etc)
 o implement UpscaledbHandler::start_bulk_*() ???
 o implement handler::check()
+
+o run other benchmarks (TPC-C etc)
+    https://github.com/Percona-Lab/tpcc-mysql
+    https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
+    - tpcc_run does not report any finished transaction - why?
+    - some database files are bigger than innodb's, others are smaller - why?
+    - a few tables are big, i.e. new_orders has 9000095 rows. A count(*)
+        requires 20 seconds. Compare w/ InnoDB and with an UQI query
+    - it feels that InnoDB is more disk space efficient if
+        1) the database is huge
+        2) the records are small (i.e. 'stock')
+        -> maybe they have less overhead per blob/record?
+        -> how do they store their record data?
+
+o how can we improve performance of duplicate keys?
+    cheap solution: split duplicate table in blocks, only merge blocks when
+        they're empty
+    better solution (more effort): blobs form a linked list
+        pro: index will become smaller and therefore faster
+        pro: less code
+        con: how to consolidate them then?
 
 . engines/iuds.strings_charsets_update_delete
     -- select * from t8 where a like 'uu%';
