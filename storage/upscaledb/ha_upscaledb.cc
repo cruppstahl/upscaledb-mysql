@@ -1031,8 +1031,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   // it's possible that a different thread has opened the Environment in
   // the meantime
   share->env = environments[name];
-  if (share->env)
+  if (share->env) {
+    ref_length = share->ref_length;
     DBUG_RETURN(0);
+  }
 
   std::string env_name = format_environment_name(name);
 
@@ -1730,7 +1732,7 @@ int
 UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
                 key_part_map keypart_map, enum ha_rkey_function find_flag)
 {
-  DBUG_ENTER("UpscaledbHandler::index_read");
+  DBUG_ENTER("UpscaledbHandler::index_read_map");
   MYSQL_INDEX_READ_ROW_START(table_share->db.str, table_share->table_name.str);
 
   bool read_primary_index = (active_index == 0 || active_index == MAX_KEY)
@@ -1909,6 +1911,18 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
       ups_key_t key = ups_make_key(&recno_row_id, sizeof(recno_row_id));
       key.flags = UPS_KEY_USER_ALLOC;
       st = ups_cursor_move(cursor, &key, &record, flags);
+    }
+    // if we move to the next duplicate of a multipart index then actually
+    // move to the next KEY, not just the next duplicate; afterwards compare
+    // if the (partial) key is still the same
+    else if ((flags & UPS_ONLY_DUPLICATES)
+            && table->key_info[active_index].user_defined_key_parts > 1) {
+      st = ups_cursor_move(cursor, &key, &record, flags & ~UPS_ONLY_DUPLICATES);
+      if (likely(st == 0)
+              hier reicht ein prefix-compare - genau wie in index_read_map!!
+            && !compare_key_part(&key, keybuf, keylen,
+                &table->key_info[active_index])
+        st = UPS_KEY_NOT_FOUND;
     }
     else {
       st = ups_cursor_move(cursor, 0, &record, flags);
