@@ -1414,6 +1414,109 @@ ups_status_to_error(TABLE *table, const char *msg, ups_status_t st)
   return HA_ERR_GENERIC;
 }
 
+static ups_key_t
+extract_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
+{
+  ups_key_t key = ups_make_key(0, 0);
+  KEY_PART_INFO *key_part = key_info->key_part;
+  uint32_t key_parts = key_info->user_defined_key_parts;
+
+  // if this is not a multi-part key AND it has fixed length then we can
+  // simply use the existing |keybuf| pointer for the lookup
+  if (key_parts == 1 && !encoded_length_bytes(key_part->type)) {
+    key.data = key_part->null_bit ? (void *)(keybuf + 1) : (void *)keybuf;
+    key.size = key_part->length;
+  }
+  // otherwise we have to unpack the row and transform it into the
+  // correct format
+  else {
+    const uint8_t *p = keybuf;
+    key_arena.clear();
+
+    for (uint32_t i = 0; i < key_parts; i++, key_part++) {
+      // skip null byte, if it exists
+      if (key_part->null_bit)
+        p++;
+
+      uint32_t length;
+      switch (encoded_length_bytes(key_part->type)) {
+        case 0:
+          length = key_part->length;
+          break;
+        case 1:
+          length = *(uint16_t *)p;
+          // append the length if it's a multi-part key
+          if (key_parts > 1) {
+            key_arena.push_back((uint8_t)length);
+            key.size += 1;
+          }
+          p += 2;
+          break;
+        case 2:
+          length = *(uint16_t *)p;
+          // append the length if it's a multi-part key
+          if (key_parts > 1) {
+            key_arena.insert(key_arena.end(), p, p + 2);
+            key.size += 2;
+          }
+          p += 2;
+          break;
+      }
+
+      // append the key data
+      key_arena.insert(key_arena.end(), p, p + length);
+      key.size += length;
+      p += key_part->length;
+    }
+
+    key.data = key_arena.data();
+  }
+  return key;
+}
+
+static ups_key_t
+extract_first_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
+{
+  ups_key_t key = ups_make_key(0, 0);
+  KEY_PART_INFO *key_part = key_info->key_part;
+  assert(key_info->user_defined_key_parts > 1);
+
+  const uint8_t *p = keybuf;
+  key_arena.clear();
+
+  // skip null byte, if it exists
+  if (key_part->null_bit)
+    p++;
+
+  uint32_t length;
+  switch (encoded_length_bytes(key_part->type)) {
+    case 0:
+      length = key_part->length;
+      break;
+    case 1:
+      length = *(uint16_t *)p;
+      // always append the length for multi-part keys
+      key_arena.push_back((uint8_t)length);
+      key.size += 1;
+      p += 2;
+      break;
+    case 2:
+      length = *(uint16_t *)p;
+      // always append the length for multi-part keys
+      key_arena.insert(key_arena.end(), p, p + 2);
+      key.size += 2;
+      p += 2;
+      break;
+  }
+
+  // append the key data
+  key_arena.insert(key_arena.end(), p, p + length);
+  key.size += length;
+  key.data = key_arena.data();
+
+  return key;
+}
+
 // write_row() inserts a row. No extra() hint is given currently if a bulk load
 // is happening. buf() is a byte array of data. You can use the field
 // information to extract the data from the native byte array type.
@@ -1752,62 +1855,8 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
     st = ups_cursor_move(cursor, 0, &record, UPS_CURSOR_FIRST);
   }
   else {
-    assert(active_index < MAX_KEY);
-    KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
-    bool multi_part = table->key_info[active_index].user_defined_key_parts > 1;
-    ups_key_t key = ups_make_key(0, 0);
-
-    // if this is not a multi-part key AND it has fixed length then we can
-    // simply use the existing |keybuf| pointer for the lookup
-    if (!multi_part && !encoded_length_bytes(key_part->type)) {
-      key.data = key_part->null_bit ? (void *)(keybuf + 1) : (void *)keybuf;
-      key.size = key_part->length;
-    }
-    // otherwise we have to unpack the row and transform it into the
-    // correct format
-    else {
-      const uint8_t *p = keybuf;
-      key_arena.clear();
-      uint32_t key_parts = table->key_info[active_index].user_defined_key_parts;
-
-      for (uint32_t i = 0; i < key_parts; i++, key_part++) {
-        // skip null byte, if it exists
-        if (key_part->null_bit)
-          p++;
-
-        uint32_t length;
-        switch (encoded_length_bytes(key_part->type)) {
-          case 0:
-            length = key_part->length;
-            break;
-          case 1:
-            length = *(uint16_t *)p;
-            // append the length if it's a multi-part key
-            if (key_parts > 1) {
-              key_arena.push_back((uint8_t)length);
-              key.size += 1;
-            }
-            p += 2;
-            break;
-          case 2:
-            length = *(uint16_t *)p;
-            // append the length if it's a multi-part key
-            if (key_parts > 1) {
-              key_arena.insert(key_arena.end(), p, p + 2);
-              key.size += 2;
-            }
-            p += 2;
-            break;
-        }
-
-        // append the key data
-        key_arena.insert(key_arena.end(), p, p + length);
-        key.size += length;
-        p += key_part->length;
-      }
-
-      key.data = key_arena.data();
-    }
+    ups_key_t key = extract_key(keybuf, &table->key_info[active_index],
+                            key_arena);
 
     switch (find_flag) {
       case HA_READ_KEY_EXACT:
@@ -1894,7 +1943,8 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
     record.flags = UPS_RECORD_USER_ALLOC;
   }
 
-  if (flags == 0) {
+  // if flags are 0: lookup the current key, but do not move the cursor!
+  if (unlikely(flags == 0)) {
     // skip the null-byte
     KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
     if (key_part->null_bit) {
@@ -1904,6 +1954,7 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
     ups_key_t key = ups_make_key((void *)keybuf, (uint16_t)keylen);
     st = ups_cursor_find(cursor, &key, &record, 0);
   }
+  // otherwise move forward or backwards (or whatever the caller requested)
   else {
     // if we fetched the record from an auto-generated index then store the
     // row id; it will be required in ::position()
@@ -1912,25 +1963,28 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
       key.flags = UPS_KEY_USER_ALLOC;
       st = ups_cursor_move(cursor, &key, &record, flags);
     }
-    // if we move to the next duplicate of a multipart index then actually
-    // move to the next KEY, not just the next duplicate; afterwards compare
-    // if the (partial) key is still the same
+    // if we move to the next duplicate of a multipart index then check if the
+    // first (!) key of the multipart key is still identical to the previous
+    // one.
     else if ((flags & UPS_ONLY_DUPLICATES)
             && table->key_info[active_index].user_defined_key_parts > 1) {
+      ups_key_t key = ups_make_key(0, 0);
       st = ups_cursor_move(cursor, &key, &record, flags & ~UPS_ONLY_DUPLICATES);
-      if (likely(st == 0)
-              hier reicht ein prefix-compare - genau wie in index_read_map!!
-            && !compare_key_part(&key, keybuf, keylen,
-                &table->key_info[active_index])
-        st = UPS_KEY_NOT_FOUND;
+      if (likely(st == 0)) {
+        ups_key_t first = extract_first_key(keybuf,
+                                &table->key_info[active_index], key_arena);
+        if (::memcmp(key.data, first.data, first.size))
+          st = UPS_KEY_NOT_FOUND;
+      }
     }
+    // otherwise simply move into the requested direction
     else {
       st = ups_cursor_move(cursor, 0, &record, flags);
     }
   }
 
   if (unlikely(st != 0))
-    goto bail;
+    return ups_status_to_error(table, "ups_cursor_move", st);
 
   // if we fetched the record from a secondary index: lookup the actual row
   // from the primary index
@@ -1944,7 +1998,7 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
     st = ups_db_find(share->autoidx.db ? share->autoidx.db : share->dbmap[0].db,
                         0, &key, &rec, 0); // or autoidx.db??
     if (unlikely(st != 0))
-      goto bail;
+      return ups_status_to_error(table, "ups_cursor_move", st);
 
     record.data = rec.data;
     record.size = rec.size;
@@ -1954,8 +2008,7 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
   if (!row_is_fixed_length(table))
     unpack_record(table, &record, buf);
 
-bail:
-  return ups_status_to_error(table, "ups_cursor_move", st);
+  return ups_status_to_error(table, "ups_cursor_move", 0);
 }
 
 // Used to read forward through the index.
@@ -2028,7 +2081,8 @@ UpscaledbHandler::index_next_same(uchar *buf, const uchar *keybuf, uint keylen)
       rc = index_operation(0, 0, buf, UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
   }
   else {
-    rc = index_operation(0, 0, buf, UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
+    rc = index_operation((uchar *)keybuf, keylen, buf,
+                    UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
   }
 
   MYSQL_READ_ROW_DONE(rc);

@@ -469,18 +469,16 @@ x use upsserver to access the environment remotely
     x make sure that ups_info and ups_dump work
     x detach the environment if it is closed (-> close_and_remove_env)
 
-o we need a "version" indicator, in case we will change the data format in the
+x we need a "version" indicator, in case we will change the data format in the
     future. use a counter in the filename, i.e. "$table.ups00"
-    o is there an error code that we can return if we open an incompatible
-        version?
 
 o make sure that wordpress works
 o test and benchmark with wordpress
 o make sure that phpmyadmin runs fine
 
-o lots of documentation
-    o release 2.2.1, it's a dependency!
-    o installation for various operating systems
+o lots of documentation (use the github wiki)
+    o requires 2.2.1 (w/ remote build!)
+    o describe the installation
     o describe the configuration settings
     o how to improve performance
         -> fixed length better than variable length,
@@ -497,6 +495,23 @@ o stabilize/fix upcoming bugs
 o lots of PR
 o simplify installation a lot; provide packages for the major distributions
 
+o run other benchmarks (TPC-C etc)
+    https://github.com/Percona-Lab/tpcc-mysql
+    https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
+    - tpcc_run does not report any finished transaction - why?
+    - some database files are bigger than innodb's, others are smaller - why?
+    - a few tables are big, i.e. order_line has 9000095 rows. A count(*)
+        requires 20 seconds. Compare w/ InnoDB and with an UQI query
+        -> this table has 4GB overhead caused by a large blob structure
+    - it feels that InnoDB is more disk space efficient if
+        1) the database is huge
+        2) the blobs are small-ish (i.e. 'stock')
+        -> maybe they have less overhead per blob/record?
+        -> how do they store their record data?
+
+o per-index options via a "CREATE TABLE" comment
+    o integer compression (works with and without duplicates)
+
 o identify the 3 most commonly used MySQL operations in Wordpress; use
     the API instead and see if it improves performance
     -> can we move this to a wordpress plugin??
@@ -510,19 +525,6 @@ o implement UpscaledbHandler::info()
         configuration parameters (page size, cache size etc)
 o implement UpscaledbHandler::start_bulk_*() ???
 o implement handler::check()
-
-o run other benchmarks (TPC-C etc)
-    https://github.com/Percona-Lab/tpcc-mysql
-    https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
-    - tpcc_run does not report any finished transaction - why?
-    - some database files are bigger than innodb's, others are smaller - why?
-    - a few tables are big, i.e. new_orders has 9000095 rows. A count(*)
-        requires 20 seconds. Compare w/ InnoDB and with an UQI query
-    - it feels that InnoDB is more disk space efficient if
-        1) the database is huge
-        2) the records are small (i.e. 'stock')
-        -> maybe they have less overhead per blob/record?
-        -> how do they store their record data?
 
 o how can we improve performance of duplicate keys?
     cheap solution: split duplicate table in blocks, only merge blocks when
@@ -543,9 +545,6 @@ o how can we improve performance of duplicate keys?
         is one; if necessary, move the cursor "to the left"
     -- or postpone for index condition pushdown!? when removing the
         collation, everything works; document this!
-
-. per-index options via a "CREATE TABLE" comment
-    o integer compression -> this will only work on unique indices!?
 
 . allow in-memory environments (comment option: "in_memory=true|false")
     currently would not work because ::create() closes the Environment,
