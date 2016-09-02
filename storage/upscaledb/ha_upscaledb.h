@@ -158,8 +158,8 @@ struct UpscaledbHandler : handler {
   ulong index_flags(uint inx, uint part, bool all_parts) const {
     return HA_READ_NEXT
             | HA_READ_PREV
-            // HA_DO_INDEX_COND_PUSHDOWN ???
-            | HA_READ_ORDER
+            // | HA_DO_INDEX_COND_PUSHDOWN ???
+            // | HA_READ_ORDER -> requires index_read_last_map (wordpress!)
             | HA_READ_RANGE;
   }
 
