@@ -472,6 +472,23 @@ x use upsserver to access the environment remotely
 x we need a "version" indicator, in case we will change the data format in the
     future. use a counter in the filename, i.e. "$table.ups00"
 
+x wordpress issue #2
+    ./mysqladmin drop --user=root wordpress_ups
+    cat ~/Downloads/wordpress_ups.sql | ./mysql --user=root wordpress_ups
+    ./mysql --user=root wordpress_ups
+    mysql> select id from wp_posts;
+    x UpscaledbHandler::open does not copy the UpscaledbShare object,
+        although it already exists (it only copies the 'env' pointer)
+    x suggestion:
+        -> see myisam's implementation on how this should be done
+        - %s/UpscaledbShare/UpscaledbData/g
+        - UpscaledbHandler: speichert UpscaledbData* statt UpscaledbShare*
+        - UpscaledbHandler::open initialisiert beide Strukturen, speichert das
+            Share global
+    
+o run.sh currently fails (i.e. ./oneidx/tinytext.txt)
+    -> only BLOB and TEXT columns are having problems
+
 o wordpress issue #1
     SELECT COUNT(*) FROM wp_comments WHERE comment_approved = '0';
     -> should be 2, but is 1
@@ -480,20 +497,6 @@ o wordpress issue #1
     o index_read_same() returns immediately; is this a problem of the sort
         order? use ups_dump to check the keys
 
-o wordpress issue #2
-    ./mysqladmin drop --user=root wordpress_ups
-    cat ~/Downloads/wordpress_ups.sql | ./mysql --user=root wordpress_ups
-    ./mysql --user=root wordpress_ups
-    mysql> select id from wp_posts;
-    o UpscaledbHandler::open does not copy the UpscaledbShare object,
-        although it already exists (it only copies the 'env' pointer)
-    o suggestion:
-        - %s/UpscaledbShare/UpscaledbData/g
-        - UpscaledbHandler: speichert UpscaledbData* statt UpscaledbShare*
-        - UpscaledbHandler::open initialisiert beide Strukturen, speichert das
-            Share global
-        - auch mal MyRocks anschauen wie's implementiert ist
-    
 o wordpress issue #3
     sporadic asserts when deleting from multiple indices; don't know how to
     reproduce this

@@ -74,17 +74,10 @@ struct DbDesc {
   MaxKeyCache *max_key_cache;
 };
 
-struct UpscaledbShare : public Handler_share {
+struct UpscaledbShare {
   UpscaledbShare()
     : env(0), initial_autoinc_value(0), autoinc_value(0), ref_length(0) {
-    thr_lock_init(&lock);
   }
-
-  ~UpscaledbShare() {
-    thr_lock_delete(&lock);
-  }
-
-  THR_LOCK lock;
 
   // the upscaledb Environment
   ups_env_t *env;
@@ -106,6 +99,22 @@ struct UpscaledbShare : public Handler_share {
 
   // The configuration, as specified in the COMMENT and the .cnf file
   Configuration config;
+};
+
+struct UpscaledbTableShare : public Handler_share {
+  UpscaledbTableShare()
+    : share(0) {
+    thr_lock_init(&lock);
+  }
+
+  ~UpscaledbTableShare() {
+    thr_lock_delete(&lock);
+  }
+
+  THR_LOCK lock;
+
+  // the upscaledb Environment
+  UpscaledbShare *share;
 };
 
 struct UpscaledbHandler : handler {
@@ -321,7 +330,7 @@ struct UpscaledbHandler : handler {
                              enum thr_lock_type lock_type);     ///< required
 
   // Allocates or returns the shared data
-  UpscaledbShare *allocate_or_get_share();
+  UpscaledbTableShare *allocate_or_get_share();
 
   // Shared data between all handlers which access this table
   UpscaledbShare *share;

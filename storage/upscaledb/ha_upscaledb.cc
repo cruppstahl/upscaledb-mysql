@@ -151,8 +151,8 @@ custom_compare_func(ups_db_t *db, const uint8_t *lhs, uint32_t lhs_length,
 static std::map<uint16_t, ups_srv_t *> servers;
 static boost::mutex servers_mutex;
 
-static std::map<std::string, ups_env_t *> environments;
-static boost::mutex environments_mutex;
+static std::map<std::string, UpscaledbShare *> shares;
+static boost::mutex shares_mutex;
 
 static std::map<std::string, CreateInfo *> create_infos;
 static boost::mutex create_infos_mutex;
@@ -246,18 +246,18 @@ rename_create_info(const char *old_name, const char *new_name)
 }
 
 static inline void
-store_env_locked(const char *table_name, ups_env_t *env)
+store_share_locked(const char *table_name, UpscaledbShare *share)
 {
-  environments[table_name] = env;
+  shares[table_name] = share;
 }
 
 static inline void
-close_and_remove_env(const char *table_name, Configuration *config)
+close_and_remove_share(const char *table_name, UpscaledbShare *share)
 {
-  boost::mutex::scoped_lock lock1(environments_mutex);
+  boost::mutex::scoped_lock lock1(shares_mutex);
   boost::mutex::scoped_lock lock2(servers_mutex);
-  ups_env_t *env = environments[table_name];
-  ups_srv_t *srv = config ? servers[config->server_port] : 0;
+  ups_env_t *env = shares[table_name] ? shares[table_name]->env : 0;
+  ups_srv_t *srv = share ? servers[share->config.server_port] : 0;
 
   // also remove the environment from a server
   if (env && srv) {
@@ -271,7 +271,7 @@ close_and_remove_env(const char *table_name, Configuration *config)
       log_error("ups_env_close", st);
   }
 
-  environments.erase(environments.find(table_name));
+  shares.erase(shares.find(table_name));
 }
 
 static inline void
@@ -956,22 +956,19 @@ UpscaledbHandler::create(const char *name, TABLE *table,
 {
   DBUG_ENTER("UpscaledbHandler::create");
 
-  if (!share)
-    share = allocate_or_get_share();
+  assert(share == 0);
 
   // clean up any remaining handles
-  close_and_remove_env(name, share ? &share->config : 0);
-
-  // create an Environment
-  assert(share->env == 0);
+  // TODO really?
+  // close_and_remove_share(name, share);
 
   UpscaledbShare tmpshare;
   std::string env_name = format_environment_name(name);
 
   // parse the configuration settings in the table's COMMENT
-  share->config = Configuration(false);
+  tmpshare.config = Configuration(false);
   if (create_info->comment.length > 0) {
-    if (!parse_comment_list(create_info->comment.str, share->config)) {
+    if (!parse_comment_list(create_info->comment.str, tmpshare.config)) {
       sql_print_error("Invalid \"CREATE TABLE\" comment");
       DBUG_RETURN(1);
     }
@@ -980,12 +977,12 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   // write the settings to the configuration file; the user can then
   // modify them
   write_configuration_settings(env_name, create_info->comment.str,
-                  share->config);
+                  tmpshare.config);
 
   ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
-                            share->config.flags, 0644,
-                            share->config.params.empty() == false
-                                ? &share->config.params[0]
+                            tmpshare.config.flags, 0644,
+                            tmpshare.config.params.empty() == false
+                                ? &tmpshare.config.params[0]
                                 : 0);
   if (st != 0) {
     log_error("ups_env_create", st);
@@ -993,7 +990,7 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   }
 
   // create a database for each index.
-  st = create_all_databases(&tmpshare, table, &share->config);
+  st = create_all_databases(&tmpshare, table, &tmpshare.config);
 
   // close Environment and all databases - it will be opened again in
   // open()
@@ -1016,25 +1013,28 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   record_arena.resize(table->s->rec_buff_length);
   ref_length = 0;
 
-  if (!share) {
-    share = allocate_or_get_share();
-    thr_lock_data_init(&share->lock, &lock_data, NULL);
-  }
-  else if (share->env != 0) {
+  assert(share == 0);
+  UpscaledbTableShare *table_share = allocate_or_get_share();
+  share = table_share->share;
+  if (share) { // already initialized?
     ref_length = share->ref_length;
     DBUG_RETURN(0);
   }
+  thr_lock_data_init(&table_share->lock, &lock_data, NULL);
 
-  //close_and_remove_env(name, &share->config);
-  boost::mutex::scoped_lock lock1(environments_mutex);
+  //close_and_remove_share(name, share);
+  boost::mutex::scoped_lock lock1(shares_mutex);
 
   // it's possible that a different thread has opened the Environment in
   // the meantime
-  share->env = environments[name];
-  if (share->env) {
+  share = shares[name];
+  if (share) {
     ref_length = share->ref_length;
     DBUG_RETURN(0);
   }
+
+  if (!share)
+    share = new UpscaledbShare;
 
   std::string env_name = format_environment_name(name);
 
@@ -1066,7 +1066,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     DBUG_RETURN(1);
   }
 
-  store_env_locked(name, share->env);
+  store_share_locked(name, share);
 
   ups_db_t *db;
 
@@ -1532,8 +1532,7 @@ UpscaledbHandler::write_row(uchar *buf)
 
   DBUG_ENTER("UpscaledbHandler::write_row");
 
-  if (unlikely(!share))
-    share = allocate_or_get_share();
+  assert(share != 0);
 
   // no index? then use the one which was automatically generated
   if (share->dbmap.empty())
@@ -1591,8 +1590,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
 
   ups_status_t st;
 
-  if (unlikely(!share))
-    share = allocate_or_get_share();
+  assert(share != 0);
 
   ups_record_t record = record_from_row(table, new_buf, record_arena);
 
@@ -1764,8 +1762,7 @@ UpscaledbHandler::delete_row(const uchar *buf)
   ups_status_t st;
   DBUG_ENTER("UpscaledbHandler::delete_row");
 
-  if (unlikely(!share))
-    share = allocate_or_get_share();
+  assert(share != 0);
 
   // fast code path: if there's just one index then use the cursor to
   // delete the record
@@ -1799,8 +1796,7 @@ UpscaledbHandler::index_init(uint idx, bool sorted)
 
   active_index = idx;
 
-  if (unlikely(!share))
-    share = allocate_or_get_share();
+  assert(share != 0);
 
   // from which index are we reading?
   ups_db_t *db = share->dbmap[idx].db;
@@ -2097,8 +2093,7 @@ UpscaledbHandler::rnd_init(bool scan)
 {
   DBUG_ENTER("UpscaledbHandler::rnd_init");
 
-  if (unlikely(!share))
-    share = allocate_or_get_share();
+  assert(share != 0);
 
   if (cursor)
     ups_cursor_close(cursor);
@@ -2415,7 +2410,7 @@ UpscaledbHandler::delete_table(const char *name)
   DBUG_ENTER("UpscaledbHandler::delete_table");
 
   // remove the environment from the global cache
-  close_and_remove_env(name, share ? &share->config : 0);
+  close_and_remove_share(name, share);
 
   // delete all files
   std::string env_name = format_environment_name(name);
@@ -2433,7 +2428,7 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   DBUG_ENTER("UpscaledbHandler::rename_table ");
   close();
 
-  close_and_remove_env(from, share ? &share->config : 0);
+  close_and_remove_share(from, share);
   rename_create_info(from, to);
 
   std::string from_name = format_environment_name(from);
@@ -2474,8 +2469,7 @@ UpscaledbHandler::records_in_range(uint index, key_range *min_key,
   KEY *key_info = table->key_info + index;
   Field *field = key_info->key_part->field;
 
-  if (!share)
-    share = allocate_or_get_share();
+  assert(share != 0);
 
   ups_record_t record = ups_make_record(0, 0);
 
@@ -2531,21 +2525,21 @@ UpscaledbHandler::records_in_range(uint index, key_range *min_key,
 #endif
 }
 
-UpscaledbShare *
+UpscaledbTableShare *
 UpscaledbHandler::allocate_or_get_share()
 {
   DBUG_ENTER("UpscaledbHandler::allocate_or_get_share");
 
   lock_shared_ha_data();
 
-  UpscaledbShare *share = (UpscaledbShare *)get_ha_share_ptr();
-  if (unlikely(!share))
-    share = new UpscaledbShare;
+  UpscaledbTableShare *table_share = (UpscaledbTableShare *)get_ha_share_ptr();
+  if (unlikely(!table_share))
+    table_share = new UpscaledbTableShare;
 
-  set_ha_share_ptr(share);
+  set_ha_share_ptr(table_share);
   unlock_shared_ha_data();
 
-  DBUG_RETURN(share);
+  DBUG_RETURN(table_share);
 }
 
 struct st_mysql_storage_engine upscaledb_storage_engine = {
