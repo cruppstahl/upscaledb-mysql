@@ -1860,8 +1860,14 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
           st = ups_cursor_find(cursor, &key, &record, 0);
         else {
           st = ups_cursor_find(cursor, &key, &record, UPS_FIND_GEQ_MATCH);
-          //if (st == 0 && ::memcmp(key.data, keybuf, offset + used_size) != 0)
-            //st = UPS_KEY_NOT_FOUND;
+          // if this was an approx. match: verify that the key part is really
+          // identical!
+          if (ups_key_get_approximate_match_type(&key) != 0) {
+            ups_key_t first = extract_first_key(keybuf,
+                                &table->key_info[active_index], key_arena);
+            if (::memcmp(key.data, first.data, first.size))
+              st = UPS_KEY_NOT_FOUND;
+          }
         }
         break;
       case HA_READ_KEY_OR_NEXT:
@@ -1941,6 +1947,8 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
 
   // if flags are 0: lookup the current key, but do not move the cursor!
   if (unlikely(flags == 0)) {
+    assert(first_call_after_position == true);
+  /*
     // skip the null-byte
     KEY_PART_INFO *key_part = table->key_info[active_index].key_part;
     if (key_part->null_bit) {
@@ -1948,6 +1956,9 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
       keylen--;
     }
     ups_key_t key = ups_make_key((void *)keybuf, (uint16_t)keylen);
+    */
+    ups_key_t key = ups_make_key((void *)last_position_key.data(),
+                            (uint16_t)last_position_key.size());
     st = ups_cursor_find(cursor, &key, &record, 0);
   }
   // otherwise move forward or backwards (or whatever the caller requested)
@@ -1966,7 +1977,7 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
             && table->key_info[active_index].user_defined_key_parts > 1) {
       ups_key_t key = ups_make_key(0, 0);
       st = ups_cursor_move(cursor, &key, &record, flags & ~UPS_ONLY_DUPLICATES);
-      if (likely(st == 0)) {
+      if (likely(st == 0 && keybuf != 0)) {
         ups_key_t first = extract_first_key(keybuf,
                                 &table->key_info[active_index], key_arena);
         if (::memcmp(key.data, first.data, first.size))
@@ -2068,13 +2079,14 @@ UpscaledbHandler::index_next_same(uchar *buf, const uchar *keybuf, uint keylen)
   int rc = 0;
 
   if (first_call_after_position) {
-    first_call_after_position = false;
 
     // locate the first key
     rc = index_operation((uchar *)keybuf, keylen, buf, 0);
     // and immediately try to move to the next key
     if (likely(rc == 0))
       rc = index_operation(0, 0, buf, UPS_ONLY_DUPLICATES | UPS_CURSOR_NEXT);
+
+    first_call_after_position = false;
   }
   else {
     rc = index_operation((uchar *)keybuf, keylen, buf,
