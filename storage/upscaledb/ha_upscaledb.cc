@@ -24,6 +24,7 @@
 #include "ha_upscaledb.h"
 #include "probes_mysql.h"
 #include "sql_plugin.h"
+#include "sql_executor.h"
 
 #include <ups/upscaledb_uqi.h>
 #include <ups/upscaledb_int.h>
@@ -1474,6 +1475,8 @@ extract_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
   return key;
 }
 
+// TODO
+// merge this with extract_first_keys() (below)
 static ups_key_t
 extract_first_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
 {
@@ -1514,6 +1517,52 @@ extract_first_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
   key.size += length;
   key.data = key_arena.data();
 
+  return key;
+}
+
+static ups_key_t
+extract_first_keys(const uint8_t *keybuf, TABLE *table,
+                KEY *key_info, ByteVector &key_arena)
+{
+  ups_key_t key = ups_make_key(0, 0);
+  KEY_PART_INFO *key_part = key_info->key_part;
+  assert(key_info->user_defined_key_parts > 1);
+
+  const uint8_t *p = keybuf;
+  key_arena.clear();
+
+  for (uint32_t i = 0; i < table->reginfo.qep_tab->ref().key_parts;
+                  i++, key_part++) {
+    // skip null byte, if it exists
+    if (key_part->null_bit)
+      p++;
+
+    uint32_t length;
+    switch (encoded_length_bytes(key_part->type)) {
+      case 0:
+        length = key_part->length;
+        break;
+      case 1:
+        length = *(uint16_t *)p;
+        // always append the length for multi-part keys
+        key_arena.push_back((uint8_t)length);
+        p += 2;
+        break;
+      case 2:
+        length = *(uint16_t *)p;
+        // always append the length for multi-part keys
+        key_arena.insert(key_arena.end(), p, p + 2);
+        p += 2;
+        break;
+    }
+  
+    // append the key data
+    key_arena.insert(key_arena.end(), p, p + length);
+    p += length;
+  }
+  
+  key.size = key_arena.size();
+  key.data = key_arena.data();
   return key;
 }
 
@@ -1978,7 +2027,7 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
       ups_key_t key = ups_make_key(0, 0);
       st = ups_cursor_move(cursor, &key, &record, flags & ~UPS_ONLY_DUPLICATES);
       if (likely(st == 0 && keybuf != 0)) {
-        ups_key_t first = extract_first_key(keybuf,
+        ups_key_t first = extract_first_keys(keybuf, table,
                                 &table->key_info[active_index], key_arena);
         if (::memcmp(key.data, first.data, first.size))
           st = UPS_KEY_NOT_FOUND;

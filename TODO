@@ -1,3 +1,10 @@
+How to log all queries:
+  set global log_output = 'FILE';
+  set global general_log_file = '/tmp/mysql.log';
+  set global general_log = "ON";
+
+
+
 x Create new storage handler "upscaledb"; copy the ha_example directory
     and edit the CMakeLists.txt file
 x TODO describe the various flags in sql/handler.h
@@ -498,24 +505,37 @@ x run.sh currently fails (i.e. ./oneidx/tinytext.txt)
     -> only BLOB and TEXT columns are having problems
     -> no, false alarm; everything works
 
-o wordpress issue #3
-    sporadic asserts when deleting from multiple indices; don't know how to
-    reproduce this
-    -> it seems a pending post is deleted?
-
-x make sure that wordpress works
-o test and benchmark with wordpress
+x gracefully fail if remote is disabled in upscaledb, but was activated
+    by the user (how to find out?)
+    -> this is not possible; it's a compile-time configuration, and if remote
+        is disabled then the library is missing (and compilation of the
+        storage engine fails)
 
 o tpcc does not yet work; the loader seems to be fine, but tpcc_run is not
     x load upscaledb and innodb with 1 warehouse; compare both databases
         -> they're ok (except that compound keys are sorted differently)
     o then start running the tests; compare queries (payment and ordstat
         seem to fail)
-        o enable query logging
+        x can we fill each database separately? - no
+        x enable query logging
+        x write a perl script which executes the queries simultaneously on
+            both databases and compares the results
+        x after fill: SELECT count(c_id) FROM customer WHERE c_w_id = 1 AND c_d_id = 7 AND c_last = 'ABLEESEPRI';
+            -> result is 79, must be 15!
+            -> theory: only the first column (c_w_id) is compared, but not the
+                second one (in UpscaledbHandler::read_next_same)
+        o still get errors during "ramp-up time"
+        o and when running: 1030, HY000, Got error 1 from storage engine
 
-o make sure that phpmyadmin runs fine
+o wordpress issue #3
+    sporadic asserts when deleting from multiple indices; don't know how to
+    reproduce this
+    -> it seems a pending post is deleted?
 
-o gracefully fail if remote is disabled in upscaledb (how to find out?)
+o run the final set of benchmarks
+    o sysbench 1.0
+    o wordpress (att: cache sizes!)
+    o tpcc (100 warehouses)
 
 o lots of documentation (use the github wiki)
     o requires 2.2.1 (w/ remote build!)
@@ -526,19 +546,24 @@ o lots of documentation (use the github wiki)
             unique better than non-unique etc
     o (upsserver) document the security problems of this approach (all
         MySQL security layers are ignored)
-    o give a short sample how to use the embedded API
+    o give a short sample how to use the embedded API (i.e. with ups_dump)
     o collations and charsets do not yet work as expected
         (if they are case-insensitive - same as MyRocks)
 
 . complex keys made up of multiple columns have different sort order than
     in innodb (i.e. tpcc/customer table)
     PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`)
+    -> at least document this for the first release
 
 o second release (beta) --------------------------------------------------
 
 o stabilize/fix upcoming bugs
 o lots of PR
 o simplify installation a lot; provide packages for the major distributions
+
+o it seems that MySQL's handler class already has functions to pack and unpack
+    keys, i.e. see calculate_key_len(). Can we switch to these functions,
+    instead of using our own?
 
 o run other benchmarks (TPC-C etc)
     https://github.com/Percona-Lab/tpcc-mysql
@@ -554,12 +579,12 @@ o run other benchmarks (TPC-C etc)
         -> maybe they have less overhead per blob/record?
         -> how do they store their record data?
 
+o complex keys made up of multiple columns have different sort order than
+    in innodb (i.e. tpcc/customer table)
+    PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`) (of tpcc/customers)
+
 o per-index options via a "CREATE TABLE" comment
     o integer compression (works with and without duplicates)
-
-o identify the 3 most commonly used MySQL operations in Wordpress; use
-    the API instead and see if it improves performance
-    -> can we move this to a wordpress plugin??
 
 o implement UpscaledbHandler::records_in_range()
 o implement UpscaledbHandler::records() (does this make things faster??)
@@ -578,6 +603,11 @@ o how can we improve performance of duplicate keys?
         pro: index will become smaller and therefore faster
         pro: less code
         con: how to consolidate them then?
+    -> see upscaledb's TODO file
+
+. identify the 3 most commonly used MySQL operations in Wordpress; use
+    the API instead and see if it improves performance
+    -> can we move this to a wordpress plugin??
 
 . engines/iuds.strings_charsets_update_delete
     -- select * from t8 where a like 'uu%';
@@ -588,13 +618,14 @@ o how can we improve performance of duplicate keys?
         includes 'U'!
     -- have to compare using the collation of the current field, if there
         is one; if necessary, move the cursor "to the left"
-    -- or postpone for index condition pushdown!? when removing the
-        collation, everything works; document this!
 
-. allow in-memory environments (comment option: "in_memory=true|false")
+o allow in-memory environments (comment option: "in_memory=true|false")
     currently would not work because ::create() closes the Environment,
     ::open() opens it. In-memory environments have to remain open!
+    -> when creating, store the UpscaledbData globally; do not close the
+        Environment again (and therefore do not open it again in ::open())
 
+o implement index condition pushdown
 
 o public release ---------------------------------------------------------
 
@@ -605,29 +636,10 @@ o secondary keys should not require a lookup of the primary key;
     directly store the blob id of the record
     -> look at BDB, they have a similar API
 
-o investigate "item condition pushdown" - it helps with long table scans;
-    basically it's the predicate filtering for non-indexed columns
-
 o online DDL:
     http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
 
-o check out code path of a SELECT statement; can we provide a shortcut, and
-    use UQI transparently??
-    x run sysbench with simple point SELECTs (--oltp-test-mode=simple)
-        -> ok, upscaledb is much faster
-    x we might be able to use ICT - "Index Condition Pushdown". See
-        handler.h cond_push(), cond_pop(), idx_cond_push() etc
-        -> no, according to the documentation we won't gain much
-    o use UQI for a few simple queries? i.e. COUNT, COUNT DISTINCT,
-        SUM, AVERAGE
-    o use UQI for more complex queries by pushing the AST down to the
-        btree? So far this will only work if there's only one (physical) index
-        in the query, and if the result is only one row. Not sure how multiple
-        rows can be propagated.
-     -> do not invest too much time b/c users can use the regular API
-        to access the data
-
-o natively support transactions with BEGIN/COMMIT/ABORT
+. natively support transactions with BEGIN/COMMIT/ABORT
     o this already works, but can we use upscaledb's transaction
         implementation?
     o see mysql-tests/suite/engines/README (item #3) on how to test this
@@ -639,18 +651,6 @@ o support encryption
     m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
     https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
     using a cheap solution or an expensive one?
-
-o improve the performance for duplicate keys
-    -> idea: split the duplicate table into smaller (linked) blobs; updating
-        and deleting records would be very fast
-    x move DuplicateTable to its own header file
-    o need to manage this linked list in the DuplicateTable
-    o access for cursors need to be accelerated, otherwise each access
-        requires traversal of the list (i.e. by caching the last block and
-        the last position)
-    o make the blob sizes variable; see what performs best
-    o then get rid of the regions again (unless they still make sense)
-    o can we remain backwards compatible? I'd rather not
 
 . improve auto-inc performance; the current code always calls index_last() to
     get the last known value. Use recno-databases instead!
