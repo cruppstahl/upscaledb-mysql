@@ -511,31 +511,10 @@ x gracefully fail if remote is disabled in upscaledb, but was activated
         is disabled then the library is missing (and compilation of the
         storage engine fails)
 
-o tpcc does not yet work; the loader seems to be fine, but tpcc_run is not
-    x load upscaledb and innodb with 1 warehouse; compare both databases
-        -> they're ok (except that compound keys are sorted differently)
-    o then start running the tests; compare queries (payment and ordstat
-        seem to fail)
-        x can we fill each database separately? - no
-        x enable query logging
-        x write a perl script which executes the queries simultaneously on
-            both databases and compares the results
-        x after fill: SELECT count(c_id) FROM customer WHERE c_w_id = 1 AND c_d_id = 7 AND c_last = 'ABLEESEPRI';
-            -> result is 79, must be 15!
-            -> theory: only the first column (c_w_id) is compared, but not the
-                second one (in UpscaledbHandler::read_next_same)
-        o still get errors during "ramp-up time"
-        o and when running: 1030, HY000, Got error 1 from storage engine
-
-o wordpress issue #3
-    sporadic asserts when deleting from multiple indices; don't know how to
-    reproduce this
-    -> it seems a pending post is deleted?
-
 o run the final set of benchmarks
     o sysbench 1.0
-    o wordpress (att: cache sizes!)
-    o tpcc (100 warehouses)
+    o wordpress (att: cache sizes! - only 1 connection!)
+    o tpcc (10 warehouses; att: cache sizes! - only 1 connection!)
 
 o lots of documentation (use the github wiki)
     o requires 2.2.1 (w/ remote build!)
@@ -550,34 +529,69 @@ o lots of documentation (use the github wiki)
     o collations and charsets do not yet work as expected
         (if they are case-insensitive - same as MyRocks)
 
-. complex keys made up of multiple columns have different sort order than
-    in innodb (i.e. tpcc/customer table)
-    PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`)
-    -> at least document this for the first release
-
 o second release (beta) --------------------------------------------------
 
 o stabilize/fix upcoming bugs
 o lots of PR
 o simplify installation a lot; provide packages for the major distributions
 
+o there's a race condition when using the MaxKeyCache:
+    - in compare_and_update(), which requires a mutex
+    - between querying the cache and actually performing the database operation
+
+o we need to implement BEGIN and COMMIT, otherwise sysbench fails when
+    running it with parallel connections (see
+    https://github.com/akopytov/sysbench/issues/65)
+
+o tpcc does not yet work; the loader seems to be fine, but tpcc_run is not
+    LD_LIBRARY_PATH=/usr/local/mysql/lib time ./tpcc_load -h localhost -d tpcc1000i -u root -p "" -w  1
+    LD_LIBRARY_PATH=/usr/local/mysql/lib time ./tpcc_start -h127.0.0.1 -P3306 -dtpcc1000u -uroot -w1 -c32 -r10 -l10800
+
+    x load upscaledb and innodb with 1 warehouse; compare both databases
+        -> they're ok (except that compound keys are sorted differently)
+    o then start running the tests; compare queries (payment and ordstat
+        seem to fail)
+        x can we fill each database separately? - no
+        x enable query logging
+        x write a perl script which executes the queries simultaneously on
+            both databases and compares the results
+        x after fill: SELECT count(c_id) FROM customer WHERE c_w_id = 1 AND c_d_id = 7 AND c_last = 'ABLEESEPRI';
+            -> result is 79, must be 15!
+            -> theory: only the first column (c_w_id) is compared, but not the
+                second one (in UpscaledbHandler::read_next_same)
+        o still get errors during "ramp-up time" (and in sysbench)
+            -> this is caused by concurrency issues. it is NOT a load issue -
+                idb and ups create identical databases. but when running
+                tpcc_start with 1 connection then everything is correct.
+            -> otoh, loading is always with 1 connection; we therefore can't
+                proof that loading is correct
+            -> sysbench also fails when using it with multiple threads.
+            x is this only related to the AUTO_INCREMENT field? hack sysbench
+                and insert a "real" ID instead of a null value. See if the
+                problem goes away
+                -> there's an option "oltp_auto_inc" == "off"
+                -> no, the problem persists
+        o and when running: 1030, HY000, Got error 1 from storage engine
+            -> might be related
+    ==> requires implementation of BEGIN/COMMIT
+
+o wordpress issue #3
+    sporadic asserts when deleting from multiple indices; don't know how to
+    reproduce this
+    -> it seems a pending post is deleted?
+
+o complex keys made up of multiple columns have different sort order than
+    in innodb (i.e. tpcc/customer table)
+    PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`)
+    -> at least document this for the first release
+
+o when loading the database with the tpcc-data, sometimes it hangs forever.
+    seems that there is some kind of deadlock then.
+    (./mysql --user=root tpcc1000u < ~/tpcc1u-dump.txt) && (./mysql --user=root tpcc1000i < ~/tpcc1i-dump.txt)
+
 o it seems that MySQL's handler class already has functions to pack and unpack
     keys, i.e. see calculate_key_len(). Can we switch to these functions,
     instead of using our own?
-
-o run other benchmarks (TPC-C etc)
-    https://github.com/Percona-Lab/tpcc-mysql
-    https://www.percona.com/blog/2013/07/01/tpcc-mysql-simple-usage-steps-and-how-to-build-graphs-with-gnuplot/
-    - tpcc_run does not report any finished transaction - why?
-    - some database files are bigger than innodb's, others are smaller - why?
-    - a few tables are big, i.e. order_line has 9000095 rows. A count(*)
-        requires 20 seconds. Compare w/ InnoDB and with an UQI query
-        -> this table has 4GB overhead caused by a large blob structure
-    - it feels that InnoDB is more disk space efficient if
-        1) the database is huge
-        2) the blobs are small-ish (i.e. 'stock')
-        -> maybe they have less overhead per blob/record?
-        -> how do they store their record data?
 
 o complex keys made up of multiple columns have different sort order than
     in innodb (i.e. tpcc/customer table)
@@ -626,6 +640,9 @@ o allow in-memory environments (comment option: "in_memory=true|false")
         Environment again (and therefore do not open it again in ::open())
 
 o implement index condition pushdown
+
+o need a code generator for the remote interface that shows how to
+    de-serialize the database records
 
 o public release ---------------------------------------------------------
 

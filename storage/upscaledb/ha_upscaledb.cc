@@ -1475,51 +1475,6 @@ extract_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
   return key;
 }
 
-// TODO
-// merge this with extract_first_keys() (below)
-static ups_key_t
-extract_first_key(const uint8_t *keybuf, KEY *key_info, ByteVector &key_arena)
-{
-  ups_key_t key = ups_make_key(0, 0);
-  KEY_PART_INFO *key_part = key_info->key_part;
-  assert(key_info->user_defined_key_parts > 1);
-
-  const uint8_t *p = keybuf;
-  key_arena.clear();
-
-  // skip null byte, if it exists
-  if (key_part->null_bit)
-    p++;
-
-  uint32_t length;
-  switch (encoded_length_bytes(key_part->type)) {
-    case 0:
-      length = key_part->length;
-      break;
-    case 1:
-      length = *(uint16_t *)p;
-      // always append the length for multi-part keys
-      key_arena.push_back((uint8_t)length);
-      key.size += 1;
-      p += 2;
-      break;
-    case 2:
-      length = *(uint16_t *)p;
-      // always append the length for multi-part keys
-      key_arena.insert(key_arena.end(), p, p + 2);
-      key.size += 2;
-      p += 2;
-      break;
-  }
-
-  // append the key data
-  key_arena.insert(key_arena.end(), p, p + length);
-  key.size += length;
-  key.data = key_arena.data();
-
-  return key;
-}
-
 static ups_key_t
 extract_first_keys(const uint8_t *keybuf, TABLE *table,
                 KEY *key_info, ByteVector &key_arena)
@@ -1581,8 +1536,6 @@ UpscaledbHandler::write_row(uchar *buf)
 
   DBUG_ENTER("UpscaledbHandler::write_row");
 
-  assert(share != 0);
-
   // no index? then use the one which was automatically generated
   if (share->dbmap.empty())
     DBUG_RETURN(insert_auto_index(share, table, buf, 0,
@@ -1638,8 +1591,6 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   DBUG_ENTER("UpscaledbHandler::update_row");
 
   ups_status_t st;
-
-  assert(share != 0);
 
   ups_record_t record = record_from_row(table, new_buf, record_arena);
 
@@ -1811,14 +1762,11 @@ UpscaledbHandler::delete_row(const uchar *buf)
   ups_status_t st;
   DBUG_ENTER("UpscaledbHandler::delete_row");
 
-  assert(share != 0);
-
   // fast code path: if there's just one index then use the cursor to
   // delete the record
   if (share->dbmap.size() <= 1) {
-    if (likely(cursor != 0)) {
+    if (likely(cursor != 0))
       st = ups_cursor_erase(cursor, 0);
-    }
     else {
       assert(share->dbmap.size() == 1);
       ups_key_t key = key_from_row(table, buf, 0, key_arena);
@@ -1912,7 +1860,7 @@ UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
           // if this was an approx. match: verify that the key part is really
           // identical!
           if (ups_key_get_approximate_match_type(&key) != 0) {
-            ups_key_t first = extract_first_key(keybuf,
+            ups_key_t first = extract_first_keys(keybuf, table,
                                 &table->key_info[active_index], key_arena);
             if (::memcmp(key.data, first.data, first.size))
               st = UPS_KEY_NOT_FOUND;

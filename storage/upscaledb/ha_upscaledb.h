@@ -182,7 +182,6 @@ struct UpscaledbHandler : handler {
     return MAX_KEY;
   }
 
-  // TODO understand this, implement it
   uint max_supported_key_parts() const {
     return MAX_REF_PARTS;
   }
