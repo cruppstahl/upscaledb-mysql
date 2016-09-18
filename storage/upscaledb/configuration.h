@@ -119,7 +119,8 @@ parse_file(const std::string &filename, T &sink)
 
 struct Configuration {
   Configuration(bool is_open_ = false)
-    : is_open(is_open_), is_server_enabled(0), server_port(DEFAULT_SERVER_PORT),
+    : is_open(is_open_), is_server_enabled(false),
+      server_port(DEFAULT_SERVER_PORT),
       flags(UPS_ENABLE_TRANSACTIONS), record_compression(0) {
   }
 
