@@ -14,37 +14,37 @@ All features are supported, although some are not yet optimized.
 You can set the cache size through an environment variable. The default is
 128mb, but you can use less and still get good performance.
 
-    UPSCALEDB\_CACHE\_SIZE      sets the cache size (in bytes)
+    UPSCALEDB_CACHE_SIZE      sets the cache size (in bytes)
 
 ## Installation
 
 1. Install upscaledb version 2.2.1
 
-    git clone https://github.com/cruppstahl/upscaledb.git
-    cd upscaledb
-    git checkout topic/2.2.1
-    ./configure && make -j 5 && sudo make install
+        git clone https://github.com/cruppstahl/upscaledb.git
+        cd upscaledb
+        git checkout topic/2.2.1
+        ./configure && make -j 5 && sudo make install
 
 2. Clone the mysql-server repository
 
-    git clone https://github.com/mysql/mysql-server.git
-    cd mysql-server
-    git checkout mysql-5.7.12
+        git clone https://github.com/mysql/mysql-server.git
+        cd mysql-server
+        git checkout mysql-5.7.12
 
 3. Copy the upscaledb storage engine from this repository to the MySQL
     server sources (note that you will have to adapt the paths)
 
-    cp -r ~/upscaledb-mysql/storage/upscaledb ~/mysql-server/storage
+        cp -r ~/upscaledb-mysql/storage/upscaledb ~/mysql-server/storage
 
 4. Build MySQL
 
-    cd ~/mysql-server
-    cmake -DCMAKE_BUILD_TYPE=Release
-    make -j 5
+        cd ~/mysql-server
+        cmake -DCMAKE_BUILD_TYPE=Release
+        make -j 5
 
     If cmake fails because boost is not installed then try this:
 
-    cmake -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=1 -DWITH_BOOST=boost
+        cmake -DCMAKE_BUILD_TYPE=Release -DDOWNLOAD_BOOST=1 -DWITH_BOOST=boost
 
 5. Now you can either install MySQL on your system, or only copy the
     storage engine plugin to your MySQL installation directory.
@@ -61,21 +61,21 @@ You can set the cache size through an environment variable. The default is
 
 6. Restart mysqld
 
-    service mysql restart
+        service mysql restart
 
 7. Register the new storage engine
 
-    mysqld --user=root <database>
-    mysql> INSTALL  PLUGIN upscaledb SONAME 'ha_upscaledb.so';
+        mysqld --user=root <database>
+        mysql> INSTALL  PLUGIN upscaledb SONAME 'ha_upscaledb.so';
 
 8. Create your tables
 
-    mysql> CREATE TABLE test (id INTEGER PRIMARY KEY) ENGINE=upscaledb;
+        mysql> CREATE TABLE test (id INTEGER PRIMARY KEY) ENGINE=upscaledb;
 
 ## Benchmarking
 
-Please use sysbench 0.5 for benchmarking, not sysbench 0.4x. You an download
-sysbench from https://github.com/akopytov/sysbench.
+Please use sysbench 0.5 (or 1.0) for benchmarking, not sysbench 0.4x. You
+can download sysbench from https://github.com/akopytov/sysbench.
 I run it with the following parameters:
 
     ./sysbench --test=tests/db/oltp.lua --mysql-socket=/tmp/mysql.sock --oltp-table-size=1000000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb prepare 
@@ -88,8 +88,8 @@ I run it with the following parameters:
 - improve SELECT performance (i.e. by using item condition pushdown)
 - sort VARCHAR/CHAR/\*TEXT columns based on encoding/collation
 - temporary tables: disable journalling
-- enable crc32
-- enable different page sizes
+- enable crc32 (done)
+- enable different page sizes (done)
 - enable record compression
 - enable integer key compression
 - ...
