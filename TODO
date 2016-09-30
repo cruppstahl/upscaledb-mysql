@@ -4,546 +4,108 @@ How to log all queries:
   set global general_log = "ON";
 
 
+Run the MySQL test suite:
+MTR_MAX_TEST_FAIL=1000 ./mysql-test-run.pl --force --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so --mysqld=--default-tmp-storage-engine=upscaledb engines/funcs.crash_manyindexes_number
+    - engines/func
+    - engines/iuds
 
-x Create new storage handler "upscaledb"; copy the ha_example directory
-    and edit the CMakeLists.txt file
-x TODO describe the various flags in sql/handler.h
-    -> only few of the flags are necessary
 
-x create/open tables, and more basic functions
-    x stubs exist; create a table, set breakpoints in all relevant functions
-    x create
-    x open
-    x transactions are enabled by default
-    x alter table: must update the upscaledb databases - not reqd
-    x drop table (implemented, but change the file extensions to "ups"!)
-    x for primary key and all indices: create separate databases
-        x index tables ((*field)->m_indexed == true): must be unique
-        x no indices at all? create record-number database
-        x auto-increment? create record-number database
-            m_create_info->used_fields & HA_CREATE_USED_AUTO
-            table->found_next_number_field
-    x when opening then make sure the fields in dbmap are correctly
-        initialized!
-        x no indices at all? open record-number database
 
-x fix the create table/delete table/create table roundtrips
-    create table upscaledb (id integer primary key) engine=upscaledb;
-    drop table upscaledb;
-    create table upscaledb (id integer primary key) engine=upscaledb;
-    drop table upscaledb;
-    create table upscaledb (id integer primary key) engine=upscaledb;
 
-x only one index (primary key)
-    x create/open: make unique primary index 
-    x insert: must update all indices (anonymous transaction)
-    x select
-    x update
-    x delete
+x Complex keys made up of multiple columns have different sort order than
+    in innodb (i.e. tpcc/customer table)
+    PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`)
+    -> verify this once more
+    -> yes, but upscaledb's sort order is clearly defined and seems to be
+        more correct
 
-x no index at all
-    x create/open: use recno database as primary index
-    x insert
-    x select
-    x update
-    x delete
+x Is the MaxKeyCache properly initialized when the database is initialized?
+    -> yes
 
-x "drop table" needs to delete all the files
-
-x Make sure that auto-increment columns are working
-    x are there other columns which can be auto-incremented? - no
-    x implement it for primary keys
-    -> in write_row it is possible:
-        if (table->next_number_field && record == table->record[0]) ...
-    x update existing columns
-
-x create a test framework with golden files which are sent to the server,
-    and a script which runs them all
-
-x many indices
-    x insert: many indices; use a transaction
-        x return correct error if a duplicate is inserted in a unique table
-        x secondary index: use different key/record
-    x select
-        x with multiple indices, by primary key
-        x with multiple indices, by secondary key
-    x delete: must update all indices (in a transaction)
-        x with multiple indices, by primary key
-        x with multiple indices, by secondary key
-            delete from upscaledb where value = 2;
-    x update: must update all indices (in a transaction)
-        x update via primary key
-        x update via secondary key
-
-x add another test case:
-    DROP TABLE IF EXISTS test;
-    CREATE TABLE test (value INTEGER NOT NULL, INDEX(value), num INTEGER PRIMARY
-    KEY) ENGINE=upscaledb;
-    INSERT INTO test VALUES(1, 1); 
-    SELECT * FROM test;
-    UPDATE test SET value = value + 1 WHERE num <= 4;
-    SELECT * FROM test;
-
-x add another test case:
-    DROP TABLE IF EXISTS test;
-    CREATE TABLE test (value INTEGER NOT NULL, INDEX(value), num INTEGER PRIMARY
-    KEY) ENGINE=upscaledb;
-    INSERT INTO test VALUES(1, 1); 
-    INSERT INTO test VALUES(1, 2); 
-    INSERT INTO test VALUES(1, 3);
-    INSERT INTO test VALUES(2, 4);
-    INSERT INTO test VALUES(3, 5);
-    UPDATE test SET value = value + 1 WHERE num <= 4;
-    SELECT * FROM test;
-    UPDATE test SET num = 10 WHERE value = 2;
-
-x set record type of secondary indices to key type of the primary key
-
-x try with keys that are not integers, and fix index_read_map()
-
-x test with blobs as primary keys (VARCHAR)
-
-x test with indexed blobs (VARCHAR)
-
-x why are VARCHAR(30) and VARBINARY(30) stored as fixed length? How can I
-    get the actually used size of a row? -> done (1st byte in the stream)
-
-x CREATE TABLE test3 (value VARBINARY(300) NOT NULL, INDEX(value), num INTEGER PRIMARY KEY) engine=upscaledb;
-    fails b/c an index is created for VARBINARY2, but they are not supported
-    by upscaledb (but work with innodb)
-    x same about VARCHAR2
-
-x check if a binary key is fixed length; if yes then set UPS_PARAM_KEY_SIZE
-    i.e. CHAR(30)
-
-x check if record is fixed length; if yes then set UPS_PARAM_RECORD_SIZE
-    table->s->stored_rec_length? (it's fixed length if it does not contain
-        VARCHAR/VARBINARY fields)
-    table->s->blob_fields, table->s->varchar_fields
-
-x combine the index_* functions -they are mostly identical
-    x also, i think they're never called on the primary key. We always have
-        to load the row from the primary index. - not true!
-    x same about rnd_*, but they only operate on the primary index
-
-x when checking with ups_dump, it seems that i.e. for a table with two integer
-    indices (each 4 bytes), we store a row of 16 bytes with garbage at the end.
-    are we storing too much??
-    x use table->s->stored_rec_length instead of table->s->rec_buff_length
-    x what about variable-length records, i.e. VARCHAR?
-        -> innodb creates a "mask" for packing/unpacking records
-        -> we need to pack them and manually remove the padding
-        -> also unpack them when they are retrieved
-        x start with pack/unpack functions which simply modify the data, just
-            to make sure that the flow is correct
-        x then implement pack/unpack
-
-x test with NULL varchar, esp. for packing/unpacking
-
-x test with BLOBs - their row format is different, and they're stored in
-    separate memory chunks
-    - use INSERT INTO PICTABLE (MYID, PIC) VALUES (3, LOAD_FILE('/PHP/ME.JPG'));
-    x TINYBLOB
-    x BLOB
-    x MEDIUMBLOB
-    x LONGBLOB
-    x create an index on a BLOB - does this make sense?
-    x create tests with multiple BLOB columns
-
-x test with TEXT
-    x TINYTEXT
-    x TEXT
-    x MEDIUMTEXT
-    x LONGTEXT
-    x create an index on a TEXT - does this make sense?
-    x create tests with multiple TEXT columns
-
-x in a table with two columns (c1 BLOB, c2 INTEGER), if there's a "SELECT c2",
-    then it's not necessary to unpack the blob! but currently the full row
-    is unpacked
-
-x check if there are other key types which can be mapped to UPS-types, i.e.
-    timestamp/bool/enum/set etc
-    http://dev.mysql.com/doc/refman/5.7/en/storage-requirements.html
-    x YEAR - 1 byte
-    x DATE - 3 bytes
-    x TIME - 3 bytes + fractions
-    x DATETIME - 5 bytes + fractions
-    x TIMESTAMP - 4 bytes + fractions
-    x ENUM - 1 or 2
-    x SET - 1-8
-
-x for secondary indices: if primary key is fixed length binary then also
-    set the length for the secondary key!
-
-x use likely/unlikely macros
-
-x test multi-indices with auto-increment index/pk
-    - not possible, there can only be one auto-increment column
-
-x support ALTER TABLE
-
-x run a first test with sysbench:
-    sysbench --mysql-socket=/tmp/mysql.sock --test=oltp --oltp-table-size=50000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no prepare
-
-    sysbench --mysql-socket=/tmp/mysql.sock --test=oltp --oltp-table-size=50000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no --max-time=60 run
-
-x "sysbench --oltp-table-size=1000000 prepare" is awefully slow
-    x identify bottleneck (theory: overwriting the duplicate table)
-        -> yes; the pages are not even flushed, but the batched updates
-            trigger many calls to DiskBlobManager::overwrite, with huge records
-    x come up with ideas how to fix this
-        x create DiskBlobManager::overwrite_regions(), which does not overwrite
-            the full record but small regions
-        x need 1 region for the actual modification, another for the
-            increased counter at the front (maybe)
-        x only mark pages dirty if they are modified: all regions and the
-            first page (with the lsn)
-        x skip this if only 1 page is modified or if compression is enabled
-            or if the record grows!
-
-x innodb is much much faster in all benchmarks; figure out how to improve
-    performance
-    x run reliable benchmarks (release mode)
-
-    x "prepare" stage: run sql commands w/o creating the index
-        -> upscaledb 1.2 sec, innodb 0.77 sec
-
-    x for bulk inserts: increase number of batched transactions
-        -> innodb does something similar
-        -> setting to 30 drops wallclock time from 1.2 sec to 0.68 sec,
-            and "sysbench prepare" from 30 sec to 16 sec
-        x set threshold through a parameter (a global setting)
-
-    x if primary key is AUTO_INCREMENT: use UPS_HINT_APPEND
-        -> currently not allowed for ups_db_insert
-        x specify UPS_OVERWRITE for unique indices (like the primary key)
-            to avoid btree lookups
-        x enable the flag for ups_db_insert. currently,
-            when enabled (temporarily), the test fails. Maybe the flag is
-            misinterpreted?? fix this -> not required
-        x verify (in a debugger) that we end up appending the key
-            -> ok
-
-    x when updating a column with multiple indices, all indices are deleted
-        and then re-created. But this is usually not required.
-        x whenever a key is inserted with UPS_OVERWRITE: first assert that
-          the key does not exist!
-        x if the primary key is updated then it's sufficient to re-insert the
-          primary index, then overwrite the records of the secondary indices.
-        x if a secondary key is updated then it's sufficient to re-insert its
-          specific index.
-        x if a non-indexed column is updated then it's sufficient to overwrite
-          the primary key's record.
-        x fix the tests and sysbench - currently fails!
-
-    x once more run benchmarks. If necessary then split the benchmark into
-        finer granularity for DELETEs, UPDATEs (primary), UPDATES (secondary)
-        etc and identify those queries which are slow
-        -> "prepare" is now faster, "run" is slower (factor 10)
-        x run for 5 minutes, dump all SQL statements
-        x lock.txt: ok - equal
-        x select-point.txt: ok - upscaledb is faster
-        x select-sum.txt: ok - equal
-        x select-range.txt: ok - equal
-        x update-primary.txt: ok - upscaledb is faster
-        x insert.txt: innodb fails (dup. key) - why does upscaledb succeed??
-        x deletes.txt: innodb (4 sec) is much faster (upscaledb: 4 min!!)
-            x try to optimize with BlobManager::overwrite_range
-                - improves, but still much slower
-        x update-secondary.txt: innodb is much faster; assumption: if a
-            secondary index is deleted, to be later re-inserted, then
-            deleting it kills performance
-
-x use sysbench 0.5
-LD_LIBRARY_PATH=/usr/local/mysql/lib time ./sysbench --test=tests/db/oltp.lua --mysql-socket=/tmp/mysql.sock  --oltp-table-size=1000000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no prepare
-
-LD_LIBRARY_PATH=/usr/local/mysql/lib time ./sysbench --test=tests/db/oltp.lua --mysql-socket=/tmp/mysql.sock  --oltp-table-size=1000000 --mysql-db=test --mysql-user=root --mysql-password= --mysql-table-engine=upscaledb --mysql-engine-trx=no --max-time=60 run
-
-    x why is innodb's "prepare" twice as fast?? -> try with more data (10 mio
-        rows)
-        -> difference is neglectable
-
-x insert.txt: innodb fails (dup. key) - why does upscaledb succeed??
-    -> fixed
-
-x "recognize" bulk inserts (i.e. by remembering the last inserted key),
-    then specify UPS_OVERWRITE; this will gain 50% performance
-    x only for unique indices!
-    x load max. key when opening the database
-    x compare in write_row(), update_row()
-
-x "drop table" returns an error, has to be run twice to succeed
-
-x compound index - an index with multiple "parts"
-    x create
-    x open
-    x insert
-    x select
-    x update
-    x delete
-    x test with INTEGER, INTEGER
-    x test with CHAR/30, CHAR/30
-    x test with CHAR/30, INTEGER
-    x test with INTEGER, CHAR/30
-    x test with VARCHAR, INTEGER
-    x test with INTEGER, VARCHAR
-    x test with VARCHAR, VARCHAR
-
-    x test with VARCHAR2, INTEGER
-    x test with INTEGER, VARCHAR2
-    x test with VARCHAR2, VARCHAR2
-
-x test with columns that are NULL
-
-x disable duplicates for unique indices
-    x investigate table flag HA_ANY_INDEX_MAY_BE_UNIQUE? -> not required
-    x set flag in DbDesc if column is unique 
-    x specify UPS_OVERWRITE if key is unique
-    x add tests; currently they fail (i.e. create a UNIQUE index in
-        compoundidx/crud.txt)
-
-x benchmark w/ multiple threads
-    --num-threads=1
-    --num-threads=2
-    --num-threads=4
-    --num-threads=8
-    --num-threads=16
-    --num-threads=32
-    -> ok; nothing changes much
-
-x when running all tests, error -22 (locked) pops up frequently
-    ./run.sh ./oneidx/crud-bigint.txt
-    -> error 31 (txn conflict)
-
-x fix valgrind errors
-
-x ./oneidx/indexed-mediumblob.txt
-    index is 100 bytes, but the secondary index actually stores the full
-    blob!
-    x also check w/ valgrind
-
-x find a way to set the cache size
-    - through a file ($table.config)
-    - through a table comment (recommended); they can be changed with
-        "alter table"
-    - through a MySQL system variable?
-    x for the alpha release: use an environment variable UPSCALEDB_CACHE_SIZE
-
-x write a readme
-
-x first release (alpha) ---------------------------------------------------
-
-x the sorting for VARCHAR/CHAR/*TEXT is according to the encoding selected by
-    the user!
-    x verify this - nothing to do here
-
-x once more double-check the table flags
-    x HA_PARTIAL_COLUMN_READ -- nope
-    x HA_GENERATED_COLUMNS
-        CREATE TABLE sales ( 
-            price_eur DOUBLE,
-            amount INT,
-            total_eur DOUBLE AS (price_eur * amount)
-            index(total_eur));
-    x HA_CAN_INDEX_VIRTUAL_GENERATED_COLUMN -- should work out of the box. If
-        yes then enable it!
-    x HA_READ_BEFORE_WRITE_REMOVAL - no
-    x HA_NO_READ_LOCAL_LOCK - yes!
-    x HA_HAS_OWN_BINLOGGING
-
-x run manual recovery tests!
-
-x what if an index is created or a column with an index is dropped
-    - will the field offsets be modified? if yes then the database names
-    will no longer match
-    -> not a problem
-
-x run more tests
-    -> MTR_MAX_TEST_FAIL=1000 ./mysql-test-run.pl --force --suite=engines/funcs --mysqld=--default-storage-engine=upscaledb --mysqld=--plugin_load=ha_upscaledb.so --mysqld=--default-tmp-storage-engine=upscaledb engines/funcs.crash_manyindexes_number
-
-    x engines/funcs.ai_sql_auto_is_null
-    x engines/funcs.an_calendar
-    x engines/funcs.an_string
-    x engines/funcs.an_number
-    x engines/funcs.ai_init_create_table
-    x engines/funcs.ai_init_alter_table
-    x fix regressions in run.sh!!
-    x engines/funcs.crash_manyindexes_number
-    x engines/funcs.crash_manyindexes_string
-    x engines/funcs.ai_reset_by_truncate
-    x engines/funcs.de_truncate_autoinc
-    x engines/funcs.ai_reset_by_truncate
-    x engines/funcs.de_autoinc
-    x engines/funcs.de_multi_db_table
-    x engines/funcs.de_multi_db_table_using
-    x engines/funcs.de_multi_table
-    x engines/funcs.de_multi_table_using
-    x engines/funcs.de_limit
-    x engines/funcs.up_limit
-    x engines/funcs.up_multi_db_table
-    x engines/funcs.up_multi_table
-    x engines/funcs.ai_init_insert_id
-    x engines/funcs.ix_index_string_length
-    x engines/funcs.in_calendar_pk_constraint_error
-    x engines/funcs.in_calendar_pk_constraint_ignore
-    x engines/funcs.ld_unique_error1
-    x engines/funcs.ld_unique_error1_local
-    x engines/funcs.ld_unique_error2
-    x engines/funcs.ld_unique_error2_local
-    x engines/funcs.ld_unique_error3
-    x engines/funcs.ld_unique_error3_local
-    x engines/funcs.se_string_distinct
-    x engines/funcs.se_string_from
-    x engines/funcs.se_string_groupby
-    x engines/funcs.se_string_having
-    x engines/funcs.se_string_limit
-    x engines/funcs.se_string_orderby
-    x engines/funcs.se_string_union
-    x engines/funcs.se_string_where
-    x engines/funcs.se_string_where_and
-    x engines/funcs.se_string_where_or
-    x engines/funcs.tr_all_type_triggers
-    x engines/funcs.tr_delete
-    x engines/funcs.in_number_unique_constraint_duplicate_update
-    x engines/funcs.in_calendar_unique_constraint_duplicate_update
-    x engines/funcs.in_string_unique_constraint_duplicate_update
-    x engines/funcs.in_multicolumn_number_unique_constraint_duplicate_update
-    x engines/funcs.tc_partition_change_from_range_to_hash_key
-    x engines/funcs.tc_partition_rebuild
-    x engines/funcs.tc_partition_reorg_divide
-    x engines/funcs.tc_partition_reorg_hash_key
-    x engines/funcs.tc_partition_reorg_merge
-    x engines/funcs.tc_temporary_column
-    x engines/funcs.tc_temporary_column_length
-    x engines/funcs.tr_update
-    x engines/funcs.tr_update_after_error
-    x engines/funcs.in_multicolumn_string_pk_constraint_duplicate_update
-    x engines/funcs.in_multicolumn_string_unique_constraint_duplicate_update
-
-x should we fix the sort order for variable-length compound keys?
-    the compare function should ignore the encoded lengths
-    -> done, it was required for some of the tests
-
-x implement UpscaledbHandler::delete_all_rows()
-x implement UpscaledbHandler::truncate()
-x implementint ha_heap::reset_auto_increment(ulonglong value)
-
-x temporary tables: automatically disable journalling
-    sql/table.cc:3313
-    db_stat & HA_OPEN_TEMPORARY ? HA_OPEN_TMP_TABLE ...
-
-x the iuds test suite has many failures
-    x engines/iuds.strings_update_delete
-    x engines/iuds.delete_year
-    x engines/iuds.delete_decimal
-    x engines/iuds.delete_time
-    x engines/iuds.update_decimal
-    x engines/iuds.update_time
-    x engines/iuds.update_year
-    x engines/iuds.insert_number
-    x engines/iuds.insert_year
-    x engines/iuds.insert_time
-    x engines/iuds.insert_calendar
-    x engines/iuds.insert_decimal
-    x engines/iuds.update_delete_calendar
-    x engines/iuds.update_delete_number
-    x engines/iuds.type_bit_iuds
-
-x support additional configuration settings
-    x per-environment options via a "CREATE TABLE" comment in ::create()
-        x "enable_compression=snappy|zlib|lz4|none"
-        x "page_size=..."
-        x write all options to a file
-    x per-environment options via a "CREATE TABLE" comment in ::open()
-        x read all options from a file
-        x "disable_recovery=true|false"
-        x "file_size_limit=..."
-        x "enable_crc32=true|false"
-        x "cache_size=unlimited|..."
-    x print more errors if parser fails
-    x delete the config file when the table is dropped
-    x rename the config file when the table is renamed? (yes, but only if
-        the file does not exist?)
-    x make sure that "ALTER TABLE" works correctly
-    x enable record compression (primary index!)
-
-x use upsserver to access the environment remotely
-    x only if enabled in the configuration
-        ("enable_server=true;server_port=123")
-    x if a server already exists for that port: attach env to it
-    x otherwise create a new server with that port
-    x make sure that ups_info and ups_dump work
-    x detach the environment if it is closed (-> close_and_remove_env)
-
-x we need a "version" indicator, in case we will change the data format in the
-    future. use a counter in the filename, i.e. "$table.ups00"
-
-x wordpress issue #1
-    SELECT COUNT(*) FROM wp_comments WHERE comment_approved = '0';
-    -> should be 2, but is 1
-    x break in UpscaledbHandler::index_read_map,
-        UpscaledbHandler::index_next_same
-    x index_next_same() returns immediately; is this a problem of the sort
-        order? use ups_dump to check the keys
-
-x wordpress issue #2
-    ./mysqladmin drop --user=root wordpress_ups
-    cat ~/Downloads/wordpress_ups.sql | ./mysql --user=root wordpress_ups
-    ./mysql --user=root wordpress_ups
-    mysql> select id from wp_posts;
-    x UpscaledbHandler::open does not copy the UpscaledbShare object,
-        although it already exists (it only copies the 'env' pointer)
-    x suggestion:
-        -> see myisam's implementation on how this should be done
-        - %s/UpscaledbShare/UpscaledbData/g
-        - UpscaledbHandler: speichert UpscaledbData* statt UpscaledbShare*
-        - UpscaledbHandler::open initialisiert beide Strukturen, speichert das
-            Share global
-    
-x run.sh currently fails (i.e. ./oneidx/tinytext.txt)
-    -> only BLOB and TEXT columns are having problems
-    -> no, false alarm; everything works
-
-x gracefully fail if remote is disabled in upscaledb, but was activated
-    by the user (how to find out?)
-    -> this is not possible; it's a compile-time configuration, and if remote
-        is disabled then the library is missing (and compilation of the
-        storage engine fails)
-
-o run the final set of benchmarks
-    o sysbench 1.0
-    o wordpress (att: cache sizes! - only 1 connection!)
-    o tpcc (10 warehouses; att: cache sizes! - only 1 connection!)
-
-o lots of documentation (use the github wiki)
-    o requires 2.2.1 (w/ remote build!)
-    o describe the installation
-    o describe the configuration settings
-    o how to improve performance
-        -> fixed length better than variable length,
-            unique better than non-unique etc
-    o (upsserver) document the security problems of this approach (all
-        MySQL security layers are ignored)
-    o give a short sample how to use the embedded API (i.e. with ups_dump)
-    o collations and charsets do not yet work as expected
-        (if they are case-insensitive - same as MyRocks)
-
-o second release (beta) --------------------------------------------------
-
-o stabilize/fix upcoming bugs
-o lots of PR
-o simplify installation a lot; provide packages for the major distributions
-
-o there's a race condition when using the MaxKeyCache:
+o There's a race condition when using the MaxKeyCache:
     - in compare_and_update(), which requires a mutex
     - between querying the cache and actually performing the database operation
+    - there are more issues; the cache is not updated when a key is deleted
+    x would it make sense to move this to upscaledb core? - no, not required
+    x use scoped_ptr for the MaxKeyCache - not reqd
+    o remove the MaxKeyCache; the upscaledb core already has a similar
+        optimization in btree_insert.cc: it uses the hinter to decide
+        if append/prepend is possible!
+        o make UPS_HINT_APPEND, UPS_HINT_PREPEND internal
+        o store the "historgram" in the database statistics
+        o initialize on demand
+        o update it when inserting, deleting
+        o clean up logic in btree_insert.cc
+        o txn_insert: if UPS_HINT_APPEND/-PREPEND is set then do not
+            look up the btree! 
 
-o we need to implement BEGIN and COMMIT, otherwise sysbench fails when
-    running it with parallel connections (see
-    https://github.com/akopytov/sysbench/issues/65)
+        o insert optimization: if the key is appended or prepended then
+            skip the btree lookup (via the UPS_HINT_* flag)
+        o erase optimization: if the deleted item is in the histogram
+            then delete it (the key must then be re-initialized whenever it's
+            accessed again)
+        o txn lookup optimization: if the key is outside of the histogram
+            then fail immediately (only if the histogram was initialized)
 
-o tpcc does not yet work; the loader seems to be fine, but tpcc_run is not
+        o btree insert optimization: if the last 5 inserts were at the same
+            page, then check:
+                hint-append: if page has no right sibling and is not full:
+                    append directly to page
+                hint-prepend: if page has no left sibling and is not full:
+                    prepend directly to page
+                if the page is not full:
+                    insert directly into the page
+        o do the same for lookups
+        o do the same for deletes
+
+o It seems that MySQL's handler class already has functions to pack and unpack
+    keys, i.e. see calculate_key_len(). Can we switch to these functions,
+    instead of using our own?
+    -> no, leave as is; switching has no benefits
+    o implement index_read_last instead of index_read_map_last
+    o implement index_read instead of index_read_map
+
+o Implement BEGIN and COMMIT, otherwise sysbench fails when running it with
+    parallel connections (see https://github.com/akopytov/sysbench/issues/65)
+    -> A writing conflict needs to block; this needs changes in upscaledb
+    o see mysql-tests/suite/engines/README (item #3) on how to test this
+    o What if transactions span multiple tables?? Then they have to be
+        shared between all upscaledb environments!
+        or - better solution (although with more effort): only use one
+        upscaledb environment per database!
+        o need a new way of mapping tables/indices to database names
+        o rewrite the existing code; all tests need to work!
+
+    o identify the callback functions in the handler that have to be
+        implemented
+        -> handler::external_lock()
+        -> handler::start_stmt()
+        -> handler::end_stmt() (a.k.a reset())
+    o upscaledb needs to block in case of a conflict (new behaviour - add
+        a flag when creating the Transaction!)
+        o add flag to wrapper libraries
+        o OR: new API to discover which Transaction is blocking, and a new
+            API to wait for it (incl. timeout)
+        -> verify this! InnoDB blocks, but has a timeout. Either we
+          have to pass the timeout to the Transaction, or the Transaction is
+          blocked in MySQL (not InnoDB)!
+
+o Implement index condition pushdown
+    -> pass a function pointer to the upscaledb core (register it as a
+        callback), then use a new "UQI scan" method to fast-forward
+        the cursor
+    o re-run wordpress benchmarks
+
+o implement UpscaledbHandler::records_in_range()
+o implement UpscaledbHandler::records() (does this make things faster??)
+o implement UpscaledbHandler::extra()
+o implement UpscaledbHandler::info()
+    innobase_hton->show_status = innobase_show_status;
+    -> print info of each environment and of each server, including all
+        configuration parameters (page size, cache size etc)
+o implement handler::check()
+
+o TPC-C does not yet work; the loader seems to be fine, but tpcc_run fails
     LD_LIBRARY_PATH=/usr/local/mysql/lib time ./tpcc_load -h localhost -d tpcc1000i -u root -p "" -w  1
     LD_LIBRARY_PATH=/usr/local/mysql/lib time ./tpcc_start -h127.0.0.1 -P3306 -dtpcc1000u -uroot -w1 -c32 -r10 -l10800
 
@@ -575,42 +137,18 @@ o tpcc does not yet work; the loader seems to be fine, but tpcc_run is not
             -> might be related
     ==> requires implementation of BEGIN/COMMIT
 
-o wordpress issue #3
-    sporadic asserts when deleting from multiple indices; don't know how to
-    reproduce this
-    -> it seems a pending post is deleted?
+o properly close the environments when the server is shut down
 
-o complex keys made up of multiple columns have different sort order than
-    in innodb (i.e. tpcc/customer table)
-    PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`)
-    -> at least document this for the first release
+. allow in-memory environments (comment option: "in_memory=true|false")
+    currently would not work because ::create() closes the Environment,
+    ::open() opens it. In-memory environments have to remain open!
+    -> when creating, store the UpscaledbData globally; do not close the
+        Environment again (and therefore do not open it again in ::open())
 
-o when loading the database with the tpcc-data, sometimes it hangs forever.
-    seems that there is some kind of deadlock then.
-    (./mysql --user=root tpcc1000u < ~/tpcc1u-dump.txt) && (./mysql --user=root tpcc1000i < ~/tpcc1i-dump.txt)
-
-o it seems that MySQL's handler class already has functions to pack and unpack
-    keys, i.e. see calculate_key_len(). Can we switch to these functions,
-    instead of using our own?
-
-o complex keys made up of multiple columns have different sort order than
-    in innodb (i.e. tpcc/customer table)
-    PRIMARY KEY (`c_w_id`,`c_d_id`,`c_id`) (of tpcc/customers)
-
-o per-index options via a "CREATE TABLE" comment
+. per-index options via a "CREATE TABLE" comment
     o integer compression (works with and without duplicates)
 
-o implement UpscaledbHandler::records_in_range()
-o implement UpscaledbHandler::records() (does this make things faster??)
-o implement UpscaledbHandler::extra()
-o implement UpscaledbHandler::info()
-    innobase_hton->show_status = innobase_show_status;
-    -> print info of each environment and of each server, including all
-        configuration parameters (page size, cache size etc)
-o implement UpscaledbHandler::start_bulk_*() ???
-o implement handler::check()
-
-o how can we improve performance of duplicate keys?
+. how can we improve performance of duplicate keys?
     cheap solution: split duplicate table in blocks, only merge blocks when
         they're empty
     better solution (more effort): blobs form a linked list
@@ -618,6 +156,9 @@ o how can we improve performance of duplicate keys?
         pro: less code
         con: how to consolidate them then?
     -> see upscaledb's TODO file
+
+. need a code generator for the remote interface that shows how to
+    de-serialize the database records
 
 . identify the 3 most commonly used MySQL operations in Wordpress; use
     the API instead and see if it improves performance
@@ -633,17 +174,6 @@ o how can we improve performance of duplicate keys?
     -- have to compare using the collation of the current field, if there
         is one; if necessary, move the cursor "to the left"
 
-o allow in-memory environments (comment option: "in_memory=true|false")
-    currently would not work because ::create() closes the Environment,
-    ::open() opens it. In-memory environments have to remain open!
-    -> when creating, store the UpscaledbData globally; do not close the
-        Environment again (and therefore do not open it again in ::open())
-
-o implement index condition pushdown
-
-o need a code generator for the remote interface that shows how to
-    de-serialize the database records
-
 o public release ---------------------------------------------------------
 
 . CREATE TABLE (id integer primary key) -> does not have to store any
@@ -656,13 +186,9 @@ o secondary keys should not require a lookup of the primary key;
 o online DDL:
     http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
 
-. natively support transactions with BEGIN/COMMIT/ABORT
-    o this already works, but can we use upscaledb's transaction
-        implementation?
-    o see mysql-tests/suite/engines/README (item #3) on how to test this
-
 o when updating: re-use the cursor by temporarily attaching it to the
     current transaction (is that possible?)
+    (is this still relevant when we use global BEGIN/COMMIT transactions?)
 
 o support encryption
     m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
@@ -674,3 +200,4 @@ o support encryption
     but remember that it's possible to use UPDATE to change the key, as long as
     the key was not yet used.
     -> or can we cache index_last() instead?
+
