@@ -690,31 +690,6 @@ key_exists(ups_db_t *db, ups_key_t *key)
   return st == 0;
 }
 
-static inline MaxKeyCache *
-initialize_max_key_cache(ups_db_t *db, uint32_t key_type)
-{
-  CursorProxy cp(db);
-  ups_key_t key = ups_make_key(0, 0);
-  ups_status_t st = ups_cursor_move(cp.cursor, &key, 0, UPS_CURSOR_LAST);
-
-  switch (key_type) {
-    case UPS_TYPE_UINT8:
-      return new MaxKeyCachePod<uint8_t>(st == 0 ? &key : 0);
-    case UPS_TYPE_UINT16:
-      return new MaxKeyCachePod<uint16_t>(st == 0 ? &key : 0);
-    case UPS_TYPE_UINT32:
-      return new MaxKeyCachePod<uint32_t>(st == 0 ? &key : 0);
-    case UPS_TYPE_UINT64:
-      return new MaxKeyCachePod<uint64_t>(st == 0 ? &key : 0);
-    case UPS_TYPE_REAL32:
-      return new MaxKeyCachePod<float>(st == 0 ? &key : 0);
-    case UPS_TYPE_REAL64:
-      return new MaxKeyCachePod<double>(st == 0 ? &key : 0);
-    default:
-      return new DisabledMaxKeyCache();
-  }
-}
-
 static inline uint64_t
 initialize_autoinc(const char *name, KEY_PART_INFO *key_part, ups_db_t *db)
 {
@@ -891,8 +866,7 @@ create_all_databases(UpscaledbShare *share, TABLE *table,
       return st;
     }
 
-    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key);
-    dbdesc.max_key_cache = initialize_max_key_cache(db, key_type);
+    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key, key_type);
     share->dbmap.push_back(dbdesc);
   }
 
@@ -914,7 +888,7 @@ create_all_databases(UpscaledbShare *share, TABLE *table,
       log_error("ups_env_create_db", st);
       return st;
     }
-    share->autoidx = DbDesc(db, 0, false, true);
+    share->autoidx = DbDesc(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
   return 0;
@@ -1109,8 +1083,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     type_info = table_key_info(key_info);
     uint32_t key_type = type_info.first;
 
-    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key);
-    dbdesc.max_key_cache = initialize_max_key_cache(db, key_type);
+    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key, key_type);
     share->dbmap.push_back(dbdesc);
 
     // is this an auto-increment field? if the database is filled then read
@@ -1136,7 +1109,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     }
 
     share->ref_length = ref_length = sizeof(uint32_t);
-    share->autoidx = DbDesc(db, 0, false, true);
+    share->autoidx = DbDesc(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
   if (share->config.is_server_enabled)
@@ -1189,10 +1162,6 @@ insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
   uint32_t flags = 0;
   if (likely(dbdesc->enable_duplicates))
     flags = UPS_DUPLICATE;
-  if (dbdesc->max_key_cache->compare_and_update(&key)) {
-    assert(!key_exists(dbdesc->db, &key));
-    flags = UPS_OVERWRITE;
-  }
 
   ups_status_t st = ups_db_insert(dbdesc->db, txn, &key, &record, flags);
 
@@ -1226,10 +1195,6 @@ insert_secondary_key(DbDesc *dbdesc, TABLE *table, int index,
   uint32_t flags = 0;
   if (likely(dbdesc->enable_duplicates))
     flags = UPS_DUPLICATE;
-  else if (dbdesc->max_key_cache->compare_and_update(&key)) {
-    assert(!key_exists(dbdesc->db, &key));
-    flags = UPS_OVERWRITE;
-  }
 
   ups_status_t st = ups_db_insert(dbdesc->db, txn, &key, &record, flags);
   if (unlikely(st == UPS_DUPLICATE_KEY))
@@ -1655,10 +1620,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
     if (unlikely(st != 0))
       DBUG_RETURN(1);
 
-    uint32_t flags = 0;
-    if (share->dbmap[0].max_key_cache->compare_and_update(&newkey))
-      flags = UPS_OVERWRITE;
-    st = ups_db_insert(db, txnp.txn, &newkey, &record, flags);
+    st = ups_db_insert(db, txnp.txn, &newkey, &record, 0);
     if (unlikely(st == UPS_DUPLICATE_KEY))
       DBUG_RETURN(HA_ERR_FOUND_DUPP_KEY);
     if (unlikely(st != 0))
@@ -1718,10 +1680,6 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
       uint32_t flags = 0;
       if (likely(share->dbmap[i].enable_duplicates))
         flags = UPS_DUPLICATE;
-      else if (share->dbmap[i].max_key_cache->compare_and_update(&newkey)) {
-        assert(!key_exists(share->dbmap[i].db, &newkey));
-        flags = UPS_OVERWRITE;
-      }
       st = ups_db_insert(share->dbmap[i].db, txnp.txn, &newkey,
                             &new_primary_record, flags);
       if (unlikely(st == UPS_DUPLICATE_KEY))

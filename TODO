@@ -22,41 +22,31 @@ x Complex keys made up of multiple columns have different sort order than
 x Is the MaxKeyCache properly initialized when the database is initialized?
     -> yes
 
-o There's a race condition when using the MaxKeyCache:
+x There's a race condition when using the MaxKeyCache:
     - in compare_and_update(), which requires a mutex
     - between querying the cache and actually performing the database operation
     - there are more issues; the cache is not updated when a key is deleted
     x would it make sense to move this to upscaledb core? - no, not required
     x use scoped_ptr for the MaxKeyCache - not reqd
-    o remove the MaxKeyCache; the upscaledb core already has a similar
+    x remove the MaxKeyCache; the upscaledb core already has a similar
         optimization in btree_insert.cc: it uses the hinter to decide
         if append/prepend is possible!
-        o make UPS_HINT_APPEND, UPS_HINT_PREPEND internal
-        o store the "historgram" in the database statistics
-        o initialize on demand
-        o update it when inserting, deleting
-        o clean up logic in btree_insert.cc
-        o txn_insert: if UPS_HINT_APPEND/-PREPEND is set then do not
+        x make UPS_HINT_APPEND, UPS_HINT_PREPEND internal
+        x store the "historgram" in the database statistics
+        x initialize and compare to get the HINT flag
+            x ups_db_insert
+            x ups_cursor_insert
+        x delete histogram if one of the keys is deleted 
+        x txn_insert: if UPS_HINT_APPEND/-PREPEND is set then do not
             look up the btree! 
 
-        o insert optimization: if the key is appended or prepended then
+        x insert optimization: if the key is appended or prepended then
             skip the btree lookup (via the UPS_HINT_* flag)
-        o erase optimization: if the deleted item is in the histogram
-            then delete it (the key must then be re-initialized whenever it's
-            accessed again)
-        o txn lookup optimization: if the key is outside of the histogram
+        x erase optimization: if the deleted item is in the histogram
+            then delete it (the histogram must then be re-initialized whenever
+            it's accessed again)
+        x txn lookup optimization: if the key is outside of the histogram
             then fail immediately (only if the histogram was initialized)
-
-        o btree insert optimization: if the last 5 inserts were at the same
-            page, then check:
-                hint-append: if page has no right sibling and is not full:
-                    append directly to page
-                hint-prepend: if page has no left sibling and is not full:
-                    prepend directly to page
-                if the page is not full:
-                    insert directly into the page
-        o do the same for lookups
-        o do the same for deletes
 
 o It seems that MySQL's handler class already has functions to pack and unpack
     keys, i.e. see calculate_key_len(). Can we switch to these functions,

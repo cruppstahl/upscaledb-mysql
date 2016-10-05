@@ -28,50 +28,18 @@
 
 typedef std::vector<uint8_t> ByteVector;
 
-struct MaxKeyCache {
-  virtual bool compare_and_update(ups_key_t *key) = 0;
-};
-
-template<typename T>
-struct MaxKeyCachePod : MaxKeyCache {
-  MaxKeyCachePod(ups_key_t *key) {
-    if (key)
-      oldkey = *(T *)key->data;
-    else
-      oldkey = 0;
-  }
-
-  virtual bool compare_and_update(ups_key_t *key) {
-    assert(key->size == sizeof(T));
-    T newkey = *(T *)key->data;
-    if (newkey > oldkey) {
-      oldkey = newkey;
-      return true;
-    }
-    return false;
-  }
-
-  T oldkey;
-};
-
-struct DisabledMaxKeyCache : MaxKeyCache {
-  virtual bool compare_and_update(ups_key_t *) {
-    return false;
-  }
-};
-
 struct DbDesc {
   DbDesc(ups_db_t *db_ = 0, Field *field_ = 0, bool enable_duplicates_ = false,
-                  bool is_primary_index_ = false)
+                  bool is_primary_index_ = false, uint32_t key_type_ = 0)
     : db(db_), field(field_), enable_duplicates(enable_duplicates_),
-      is_primary_index(is_primary_index_), max_key_cache(0) {
+      is_primary_index(is_primary_index_), key_type(key_type_) {
   }
 
   ups_db_t *db;
   Field *field;
   bool enable_duplicates; 
   bool is_primary_index; 
-  MaxKeyCache *max_key_cache;
+  uint32_t key_type;
 };
 
 struct UpscaledbShare {
