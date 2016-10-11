@@ -1825,10 +1825,10 @@ UpscaledbHandler::index_end()
 // row if available. If the key value is null, begin at the first key of the
 // index.
 int
-UpscaledbHandler::index_read_map(uchar *buf, const uchar *keybuf,
-                key_part_map keypart_map, enum ha_rkey_function find_flag)
+UpscaledbHandler::index_read(uchar *buf, const uchar *keybuf,
+                uint32_t keylen, enum ha_rkey_function find_flag)
 {
-  DBUG_ENTER("UpscaledbHandler::index_read_map");
+  DBUG_ENTER("UpscaledbHandler::index_read");
   MYSQL_INDEX_READ_ROW_START(table_share->db.str, table_share->table_name.str);
 
   bool read_primary_index = (active_index == 0 || active_index == MAX_KEY)

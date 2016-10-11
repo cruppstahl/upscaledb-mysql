@@ -234,7 +234,7 @@ struct UpscaledbHandler : handler {
   // Positions an index cursor to the index specified in the handle. Fetches the
   // row if available. If the key value is null, begin at the first key of the
   // index.
-  int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,
+  int index_read(uchar *buf, const uchar *key, uint32_t keylen,
                   enum ha_rkey_function find_flag);
 
   // Moves the cursor to the next row
