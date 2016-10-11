@@ -48,23 +48,33 @@ x There's a race condition when using the MaxKeyCache:
         x txn lookup optimization: if the key is outside of the histogram
             then fail immediately (only if the histogram was initialized)
 
-o It seems that MySQL's handler class already has functions to pack and unpack
+x It seems that MySQL's handler class already has functions to pack and unpack
     keys, i.e. see calculate_key_len(). Can we switch to these functions,
     instead of using our own?
     -> no, leave as is; switching has no benefits
-    o implement index_read_last instead of index_read_map_last
-    o implement index_read instead of index_read_map
+    x implement index_read instead of index_read_map
 
-o Implement BEGIN and COMMIT, otherwise sysbench fails when running it with
-    parallel connections (see https://github.com/akopytov/sysbench/issues/65)
-    -> A writing conflict needs to block; this needs changes in upscaledb
-    o see mysql-tests/suite/engines/README (item #3) on how to test this
-    o What if transactions span multiple tables?? Then they have to be
-        shared between all upscaledb environments!
-        or - better solution (although with more effort): only use one
-        upscaledb environment per database!
-        o need a new way of mapping tables/indices to database names
-        o rewrite the existing code; all tests need to work!
+o Implement BEGIN and COMMIT
+    o Currently we cannot share a transaction over multiple tables, because each
+        table is in its own upscaledb environment. We have to store all
+        tables in the same environment.
+        o create a new struct "Catalogue" which stores the env and the mapping
+            of "table/index" to the database name
+        o The environment is stored in a global map, indexed by the database
+            name (managed by the Catalogue)
+        o Each table is managed by the TableCatalogue and manages the indices
+            (i.e. std::vector<ups_db_t *>) - very similar to the current share
+        o The UpscaledbHandler then uses the TableCatalogue to store and access
+            its state (databases, autoidx, ref_length etc)
+        o So far this is not a significant change - make sure that all tests
+            are still running
+        o Read the configuration from "upscaledb.cnf" - but no longer use
+            the COMMENT string!
+            o store the configuration in the Catalogue
+            o when the environment is created: add an empty ".cnf" template!
+        o rewrite implementation of rename_table()
+        o rewrite implementation of truncate_table()
+        o all tests need to work!
 
     o identify the callback functions in the handler that have to be
         implemented
@@ -79,13 +89,21 @@ o Implement BEGIN and COMMIT, otherwise sysbench fails when running it with
         -> verify this! InnoDB blocks, but has a timeout. Either we
           have to pass the timeout to the Transaction, or the Transaction is
           blocked in MySQL (not InnoDB)!
+    o can we streamline/clean up the transaction handling of the cursor? And
+        make the cursor part of the currently active transaction? Then we
+        can avoid a few lookups
+
+    o see mysql-tests/suite/engines/README (item #3) on how to test this
+    o make sure that sysbench oltp now works as expected (with multiple
+        connections AND transactions)
 
 o Implement index condition pushdown
     -> pass a function pointer to the upscaledb core (register it as a
         callback), then use a new "UQI scan" method to fast-forward
         the cursor
-    o re-run wordpress benchmarks
 
+o implement index_read_map_last (or rather: index_read_last), set
+    the flag HA_READ_ORDER (can be tested w/ wordpress)
 o implement UpscaledbHandler::records_in_range()
 o implement UpscaledbHandler::records() (does this make things faster??)
 o implement UpscaledbHandler::extra()
@@ -129,14 +147,37 @@ o TPC-C does not yet work; the loader seems to be fine, but tpcc_run fails
 
 o properly close the environments when the server is shut down
 
+o per-index options via a "CREATE TABLE" comment
+    o integer compression (works with and without duplicates)
+
+o CREATE TABLE (id integer primary key) -> does not have to store any
+    records! (but it does)
+
+o public release ---------------------------------------------------------
+
+o secondary keys should not require a lookup of the primary key;
+    directly store the blob id of the record
+    -> look at BDB, they have a similar API
+
+o online DDL:
+    http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
+
+o support encryption
+    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
+    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
+    using a cheap solution or an expensive one?
+
+. improve auto-inc performance; the current code always calls index_last() to
+    get the last known value. Use recno-databases instead!
+    but remember that it's possible to use UPDATE to change the key, as long as
+    the key was not yet used.
+    -> or can we cache index_last() instead?
+
 . allow in-memory environments (comment option: "in_memory=true|false")
     currently would not work because ::create() closes the Environment,
     ::open() opens it. In-memory environments have to remain open!
     -> when creating, store the UpscaledbData globally; do not close the
         Environment again (and therefore do not open it again in ::open())
-
-. per-index options via a "CREATE TABLE" comment
-    o integer compression (works with and without duplicates)
 
 . how can we improve performance of duplicate keys?
     cheap solution: split duplicate table in blocks, only merge blocks when
@@ -163,31 +204,4 @@ o properly close the environments when the server is shut down
         includes 'U'!
     -- have to compare using the collation of the current field, if there
         is one; if necessary, move the cursor "to the left"
-
-o public release ---------------------------------------------------------
-
-. CREATE TABLE (id integer primary key) -> does not have to store any
-    records! (but it does)
-
-o secondary keys should not require a lookup of the primary key;
-    directly store the blob id of the record
-    -> look at BDB, they have a similar API
-
-o online DDL:
-    http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
-
-o when updating: re-use the cursor by temporarily attaching it to the
-    current transaction (is that possible?)
-    (is this still relevant when we use global BEGIN/COMMIT transactions?)
-
-o support encryption
-    m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
-    https://dev.mysql.com/doc/refman/5.7/en/innodb-tablespace-encryption.html
-    using a cheap solution or an expensive one?
-
-. improve auto-inc performance; the current code always calls index_last() to
-    get the last known value. Use recno-databases instead!
-    but remember that it's possible to use UPDATE to change the key, as long as
-    the key was not yet used.
-    -> or can we cache index_last() instead?
 
