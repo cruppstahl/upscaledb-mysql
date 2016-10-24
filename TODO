@@ -58,23 +58,36 @@ o Implement BEGIN and COMMIT
     o Currently we cannot share a transaction over multiple tables, because each
         table is in its own upscaledb environment. We have to store all
         tables in the same environment.
-        o create a new struct "Catalogue" which stores the env and the mapping
+        x create a new struct "Catalogue" which stores the env and the mapping
             of "table/index" to the database name
-        o The environment is stored in a global map, indexed by the database
+        x The environment is stored in a global map, indexed by the database
             name (managed by the Catalogue)
-        o Each table is managed by the TableCatalogue and manages the indices
+        x Each table is managed by Catalogue::Table and stores the indices
             (i.e. std::vector<ups_db_t *>) - very similar to the current share
-        o The UpscaledbHandler then uses the TableCatalogue to store and access
-            its state (databases, autoidx, ref_length etc)
+        x The UpscaledbHandler then uses the Catalogue::Table to store and
+            access its state (databases, autoidx, ref_length etc)
+        x Do not close the Environment after it was created; only open it
+            if necessary - no, this doesn't work b/c the Field pointers
+            are temporary
+        o Merge the CreateInfo structure with the new catalogue
         o So far this is not a significant change - make sure that all tests
             are still running
+        o Also close the structures and clean up
         o Read the configuration from "upscaledb.cnf" - but no longer use
             the COMMENT string!
-            o store the configuration in the Catalogue
+            o store the configuration directly in the Catalogue
             o when the environment is created: add an empty ".cnf" template!
+        o Remove the remaining traces of the UpscaledbShare and
+            UpscaledbTableShare classes
+        o Reuse the Environment *per database*, not per table! This is the
+            critical stage. Need to allocate databases, and a mapping for
+            "table_name/index" to actual database names
         o rewrite implementation of rename_table()
         o rewrite implementation of truncate_table()
-        o all tests need to work!
+        o make sure that temp. tables are created in an in-memory environment
+        o currently, ::open and ::create lock the databases_mutex for a
+            long time; try to increase concurrency
+        o all tests need to run!
 
     o identify the callback functions in the handler that have to be
         implemented

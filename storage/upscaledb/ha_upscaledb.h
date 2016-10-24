@@ -24,46 +24,15 @@
 #include "thr_lock.h"                    /* THR_LOCK, THR_LOCK_DATA */
 #include "handler.h"                     /* handler */
 #include "my_base.h"                     /* ha_rows */
+
 #include "configuration.h"
+#include "catalogue.h"
 
 typedef std::vector<uint8_t> ByteVector;
 
-struct DbDesc {
-  DbDesc(ups_db_t *db_ = 0, Field *field_ = 0, bool enable_duplicates_ = false,
-                  bool is_primary_index_ = false, uint32_t key_type_ = 0)
-    : db(db_), field(field_), enable_duplicates(enable_duplicates_),
-      is_primary_index(is_primary_index_), key_type(key_type_) {
-  }
-
-  ups_db_t *db;
-  Field *field;
-  bool enable_duplicates; 
-  bool is_primary_index; 
-  uint32_t key_type;
-};
-
 struct UpscaledbShare {
-  UpscaledbShare()
-    : env(0), initial_autoinc_value(0), autoinc_value(0), ref_length(0) {
+  UpscaledbShare() {
   }
-
-  // the upscaledb Environment
-  ups_env_t *env;
-
-  // a list of all databases in this Environment
-  std::vector<DbDesc> dbmap;
-
-  // if no index is specified: create one
-  DbDesc autoidx;
-
-  // initial AUTO_INCREMENT value
-  uint64_t initial_autoinc_value;
-
-  // current AUTO_INCREMENT value
-  uint64_t autoinc_value;
-
-  // length of the |ref| length indicator
-  uint32_t ref_length;
 
   // The configuration, as specified in the COMMENT and the .cnf file
   Configuration config;
@@ -88,7 +57,7 @@ struct UpscaledbTableShare : public Handler_share {
 struct UpscaledbHandler : handler {
   // Constructor
   UpscaledbHandler(handlerton *hton, TABLE_SHARE *table_arg)
-    : handler(hton, table_arg), share(0), cursor(0),
+    : handler(hton, table_arg), share(0), catdb(0), cattbl(0), cursor(0),
       first_call_after_position(false), recno_row_id(0) {
   }
 
@@ -256,8 +225,8 @@ struct UpscaledbHandler : handler {
                   ulonglong *nb_reserved_values);
 
   virtual void release_auto_increment() {
-    if (next_insert_id > share->autoinc_value)
-      share->autoinc_value = next_insert_id - 1;
+    if (next_insert_id > cattbl->autoinc_value)
+      cattbl->autoinc_value = next_insert_id - 1;
   }
 
   int info(uint);                                               ///< required
@@ -301,6 +270,12 @@ struct UpscaledbHandler : handler {
 
   // Shared data between all handlers which access this table
   UpscaledbShare *share;
+
+  // The (global) Database object; stores the upscaledb environment
+  Catalogue::Database *catdb;
+
+  // The Table object
+  Catalogue::Table *cattbl;
 
   // Mutexes for locking (seem to be required)
   THR_LOCK_DATA lock_data;

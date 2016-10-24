@@ -20,7 +20,7 @@ link_directories("/home/ruppc/prj/upscaledb/src/5server/.libs")
 
 
 SET(UPSCALEDB_PLUGIN_DYNAMIC "ha_upscaledb")
-SET(UPSCALEDB_SOURCES ha_upscaledb.cc)
+SET(UPSCALEDB_SOURCES ha_upscaledb.cc catalogue.cc)
 MYSQL_ADD_PLUGIN(upscaledb ${UPSCALEDB_SOURCES} STORAGE_ENGINE MODULE_ONLY)
 
 target_link_libraries(upscaledb -lupscaledb -lupsserver -lboost_filesystem)

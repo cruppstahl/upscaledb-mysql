@@ -252,12 +252,21 @@ store_share_locked(const char *table_name, UpscaledbShare *share)
   shares[table_name] = share;
 }
 
+static inline std::string
+format_environment_name(const char *name)
+{
+  std::string n(name);
+  return n + ".ups";
+}
+
 static inline void
-close_and_remove_share(const char *table_name, UpscaledbShare *share)
+close_and_remove_share(const char *table_name, Catalogue::Database *catdb,
+                UpscaledbShare *share)
 {
   boost::mutex::scoped_lock lock1(shares_mutex);
   boost::mutex::scoped_lock lock2(servers_mutex);
-  ups_env_t *env = shares[table_name] ? shares[table_name]->env : 0;
+  boost::mutex::scoped_lock lock3(Catalogue::databases_mutex);
+  ups_env_t *env = catdb ? catdb->env : 0;
   ups_srv_t *srv = share ? servers[share->config.server_port] : 0;
 
   // also remove the environment from a server
@@ -270,9 +279,16 @@ close_and_remove_share(const char *table_name, UpscaledbShare *share)
     ups_status_t st = ups_env_close(env, UPS_AUTO_CLEANUP);
     if (unlikely(st != 0))
       log_error("ups_env_close", st);
+    catdb->env = 0;
   }
 
-  shares.erase(shares.find(table_name));
+  if (shares.find(table_name) != shares.end())
+    shares.erase(shares.find(table_name));
+
+  // TODO TODO TODO
+  std::string env_name = format_environment_name(table_name);
+  if (Catalogue::databases.find(env_name) != Catalogue::databases.end())
+    Catalogue::databases.erase(Catalogue::databases.find(env_name));
 }
 
 static inline void
@@ -398,13 +414,6 @@ table_key_info(KEY *key_info)
   return std::make_pair(need_custom_compare
                             ? UPS_TYPE_CUSTOM
                             : UPS_TYPE_BINARY, total_size);
-}
-
-static inline std::string
-format_environment_name(const char *name)
-{
-  std::string n(name);
-  return n + ".ups";
 }
 
 static inline ups_key_t
@@ -728,29 +737,29 @@ initialize_autoinc(const char *name, KEY_PART_INFO *key_part, ups_db_t *db)
 }
 
 static ups_status_t
-delete_all_databases(UpscaledbShare *share, TABLE *table)
+delete_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
+                TABLE *table)
 {
   ups_status_t st;
   uint16_t names[1024];
   uint32_t length = 1024;
-  st = ups_env_get_database_names(share->env, names, &length);
+  st = ups_env_get_database_names(catdb->env, names, &length);
   if (unlikely(st)) {
     log_error("ups_env_get_database_names", st);
     return 1;
   }
 
-  if (share->autoidx.db) {
-    ups_db_close(share->autoidx.db, 0);
-    share->autoidx.db = 0;
+  if (cattbl->autoidx.db) {
+    ups_db_close(cattbl->autoidx.db, 0);
+    cattbl->autoidx.db = 0;
   }
 
-  for (size_t i = 0; i < share->dbmap.size(); i++) {
-    ups_db_close(share->dbmap[i].db, 0);
-  }
-  share->dbmap.clear();
+  for (size_t i = 0; i < cattbl->indices.size(); i++)
+    ups_db_close(cattbl->indices[i].db, 0);
+  cattbl->indices.clear();
 
   for (uint32_t i = 0; i < length; i++) {
-    st = ups_env_erase_db(share->env, names[i], 0);
+    st = ups_env_erase_db(catdb->env, names[i], 0);
     if (unlikely(st)) {
       log_error("ups_env_erase_db", st);
       return 1;
@@ -761,8 +770,8 @@ delete_all_databases(UpscaledbShare *share, TABLE *table)
 }
 
 static ups_status_t
-create_all_databases(UpscaledbShare *share, TABLE *table,
-                Configuration *config)
+create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
+                TABLE *table, Configuration *config)
 {
   ups_db_t *db;
   int num_indices = table->s->keys;
@@ -771,7 +780,7 @@ create_all_databases(UpscaledbShare *share, TABLE *table,
   // key info for the primary key
   std::pair<uint32_t, uint32_t> primary_type_info;
 
-  assert(share->dbmap.empty());
+  assert(cattbl->indices.empty());
 
   ups_register_compare(CUSTOM_COMPARE_NAME, custom_compare_func);
 
@@ -859,15 +868,15 @@ create_all_databases(UpscaledbShare *share, TABLE *table,
       p++;
     }
 
-    ups_status_t st = ups_env_create_db(share->env, &db, dbname(i),
+    ups_status_t st = ups_env_create_db(catdb->env, &db, dbname(i),
                                 flags, params);
     if (unlikely(st != 0)) {
       log_error("ups_env_create_db", st);
       return st;
     }
 
-    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key, key_type);
-    share->dbmap.push_back(dbdesc);
+    cattbl->indices.push_back(Catalogue::Index(db, field, enable_duplicates,
+                            is_primary_key, key_type));
   }
 
   // no primary index? then create a record-number database
@@ -882,13 +891,13 @@ create_all_databases(UpscaledbShare *share, TABLE *table,
       params[0].value = config->record_compression;
     }
 
-    ups_status_t st = ups_env_create_db(share->env, &db, 1,
+    ups_status_t st = ups_env_create_db(catdb->env, &db, 1,
                                 UPS_RECORD_NUMBER32, &params[0]);
     if (unlikely(st != 0)) {
       log_error("ups_env_create_db", st);
       return st;
     }
-    share->autoidx = DbDesc(db, 0, false, true, UPS_TYPE_UINT32);
+    cattbl->autoidx = Catalogue::Index(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
   return 0;
@@ -931,14 +940,26 @@ UpscaledbHandler::create(const char *name, TABLE *table,
 {
   DBUG_ENTER("UpscaledbHandler::create");
 
-  assert(share == 0);
+  std::string env_name = format_environment_name(name);
 
-  // clean up any remaining handles
-  // TODO really?
-  // close_and_remove_share(name, share);
+  // See if the Catalogue::Database was already created; otherwise create
+  // a new one
+  boost::mutex::scoped_lock lock(Catalogue::databases_mutex);
+  std::string db_name = env_name; // TODO boost::filesystem::path(name).parent_path().string();
+  catdb = Catalogue::databases[db_name];
+  if (!catdb) {
+    catdb = new Catalogue::Database(db_name);
+    Catalogue::databases[db_name] = catdb;
+  }
+
+  // Now create the table information. Use a temporary structure instead
+  // of a global (persisted) one, since the Field pointers are only
+  // temporary and will be destroyed by the caller
+  std::string tbl_name = boost::filesystem::path(name).filename().string();
+  assert(catdb->tables.find(tbl_name) == catdb->tables.end());
+  Catalogue::Table tbl(tbl_name);
 
   UpscaledbShare tmpshare;
-  std::string env_name = format_environment_name(name);
 
   // parse the configuration settings in the table's COMMENT
   tmpshare.config = Configuration(false);
@@ -954,26 +975,39 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   write_configuration_settings(env_name, create_info->comment.str,
                   tmpshare.config);
 
-  ups_status_t st = ups_env_create(&tmpshare.env, env_name.c_str(),
+  ups_status_t st = 0;
+  if (catdb->env == 0) {
+    st = ups_env_create(&catdb->env, env_name.c_str(),
                             tmpshare.config.flags, 0644,
                             tmpshare.config.params.empty() == false
                                 ? &tmpshare.config.params[0]
                                 : 0);
-  if (st != 0) {
-    log_error("ups_env_create", st);
-    DBUG_RETURN(1);
+    if (st != 0) {
+      log_error("ups_env_create", st);
+      DBUG_RETURN(1);
+    }
   }
 
   // create a database for each index.
-  st = create_all_databases(&tmpshare, table, &tmpshare.config);
-
-  // close Environment and all databases - it will be opened again in
-  // open()
-  (void)ups_env_close(tmpshare.env, UPS_AUTO_CLEANUP);
+  st = create_all_databases(catdb, &tbl, table, &tmpshare.config);
 
   // store the create_info object; might be required later
   if (likely(st == 0))
     store_create_info(name, new CreateInfo(create_info));
+
+  // We have to clean up the database handles before |tbl| goes out
+  // of scope
+  // TODO move to Catalogue::~Table
+  for (size_t i = 0; i < tbl.indices.size(); i++) {
+    st = ups_db_close(tbl.indices[i].db, 0);
+    if (unlikely(st != 0))
+      log_error("ups_db_close", st);
+  }
+  if (tbl.autoidx.db != 0) {
+    st = ups_db_close(tbl.autoidx.db, 0);
+    if (unlikely(st != 0))
+      log_error("ups_db_close", st);
+  }
 
   DBUG_RETURN(st ? 1 : 0);
 }
@@ -988,30 +1022,50 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   record_arena.resize(table->s->rec_buff_length);
   ref_length = 0;
 
+  std::string env_name = format_environment_name(name);
+
+  // See if the Catalogue::Database was already created; otherwise create
+  // a new one
+  boost::mutex::scoped_lock lock(Catalogue::databases_mutex);
+  std::string db_name = env_name; // TODO boost::filesystem::path(name).parent_path().string();
+  catdb = Catalogue::databases[db_name];
+  if (!catdb) {
+    catdb = new Catalogue::Database(db_name);
+    Catalogue::databases[db_name] = catdb;
+  }
+
+  // Now create the table information
+  std::string tbl_name = boost::filesystem::path(name).filename().string();
+  cattbl = catdb->tables[tbl_name];
+  bool already_initialized = true;
+  if (!cattbl) {
+    cattbl = new Catalogue::Table(tbl_name);
+    catdb->tables[tbl_name] = cattbl;
+    already_initialized = false;
+  }
+
   assert(share == 0);
   UpscaledbTableShare *table_share = allocate_or_get_share();
   share = table_share->share;
   if (share) { // already initialized?
-    ref_length = share->ref_length;
+    ref_length = cattbl->ref_length;
     DBUG_RETURN(0);
   }
+
   thr_lock_data_init(&table_share->lock, &lock_data, NULL);
 
-  //close_and_remove_share(name, share);
   boost::mutex::scoped_lock lock1(shares_mutex);
 
   // it's possible that a different thread has opened the Environment in
   // the meantime
   share = shares[name];
   if (share) {
-    ref_length = share->ref_length;
+    ref_length = cattbl->ref_length;
     DBUG_RETURN(0);
   }
 
   if (!share)
     share = new UpscaledbShare;
-
-  std::string env_name = format_environment_name(name);
 
   // parse the configuration settings in the table's .cnf file
   share->config = Configuration(true);
@@ -1019,6 +1073,9 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     sql_print_error("Invalid configuration file '%s.cnf'", env_name.c_str());
     DBUG_RETURN(1);
   }
+
+  if (already_initialized)
+    DBUG_RETURN(0);
 
   // Temporary databases are opened in memory; read-only databases are
   // opened in read-only mode
@@ -1031,14 +1088,17 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   // open the Environment
   recovery_table = table;
-  ups_status_t st = ups_env_open(&share->env, env_name.c_str(),
+  ups_status_t st = 0;
+  if (catdb->env == 0) {
+    st = ups_env_open(&catdb->env, env_name.c_str(),
                                 share->config.flags,
                                 share->config.params.empty() == false
                                     ? &share->config.params[0]
                                     : 0);
-  if (unlikely(st != 0)) {
-    log_error("ups_env_open", st);
-    DBUG_RETURN(1);
+    if (unlikely(st != 0)) {
+      log_error("ups_env_open", st);
+      DBUG_RETURN(1);
+    }
   }
 
   store_share_locked(name, share);
@@ -1047,6 +1107,9 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   int num_indices = table->s->keys;
   bool has_primary_index = false;
+
+  if (cattbl->indices.size() > 0 || cattbl->autoidx.db != 0)
+    DBUG_RETURN(0);
 
   // foreach indexed field: open the database which stores this index
   KEY *key_info = table->key_info;
@@ -1067,10 +1130,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
     if (is_primary_key) {
       has_primary_index = true;
-      share->ref_length = ref_length = table->key_info[0].key_length;
+      cattbl->ref_length = ref_length = table->key_info[0].key_length;
     }
 
-    st = ups_env_open_db(share->env, &db, dbname(i), 0, 0);
+    st = ups_env_open_db(catdb->env, &db, dbname(i), 0, 0);
     if (st != 0) {
       log_error("ups_env_open_db", st);
       DBUG_RETURN(1);
@@ -1083,17 +1146,17 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     type_info = table_key_info(key_info);
     uint32_t key_type = type_info.first;
 
-    DbDesc dbdesc(db, field, enable_duplicates, is_primary_key, key_type);
-    share->dbmap.push_back(dbdesc);
+    cattbl->indices.push_back(Catalogue::Index(db, field, enable_duplicates,
+                            is_primary_key, key_type));
 
     // is this an auto-increment field? if the database is filled then read
     // the maximum value, otherwise initialize from the cached create_info 
     if (field == table->found_next_number_field) {
       for (uint32_t k = 0; k < key_info->user_defined_key_parts; k++) {
         if (key_info->key_part[k].field == field) {
-          share->autoinc_value = initialize_autoinc(name,
+          cattbl->autoinc_value = initialize_autoinc(name,
                           &key_info->key_part[k], db);
-          share->initial_autoinc_value = share->autoinc_value + 1;
+          cattbl->initial_autoinc_value = cattbl->autoinc_value + 1;
           break;
         }
       }
@@ -1102,18 +1165,18 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   // no primary index? then create a record-number database
   if (!has_primary_index) {
-    st = ups_env_open_db(share->env, &db, 1, 0, 0);
+    st = ups_env_open_db(catdb->env, &db, 1, 0, 0);
     if (unlikely(st != 0)) {
       log_error("ups_env_open_db", st);
       DBUG_RETURN(1);
     }
 
-    share->ref_length = ref_length = sizeof(uint32_t);
-    share->autoidx = DbDesc(db, 0, false, true, UPS_TYPE_UINT32);
+    cattbl->ref_length = ref_length = sizeof(uint32_t);
+    cattbl->autoidx = Catalogue::Index(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
   if (share->config.is_server_enabled)
-    DBUG_RETURN(attach_to_server(share->env, name + 1, // skip leading "."
+    DBUG_RETURN(attach_to_server(catdb->env, name + 1, // skip leading "."
                             &share->config));
 
   DBUG_RETURN(0);
@@ -1131,13 +1194,13 @@ UpscaledbHandler::close()
 }
 
 static inline int
-insert_auto_index(UpscaledbShare *share, TABLE *table, uint8_t *buf,
+insert_auto_index(Catalogue::Table *cattbl, TABLE *table, uint8_t *buf,
                 ups_txn_t *txn, ByteVector &key_arena, ByteVector &record_arena)
 {
   ups_key_t key = ups_make_key(0, 0);
   ups_record_t record = record_from_row(table, buf, record_arena);
 
-  ups_status_t st = ups_db_insert(share->autoidx.db, txn, &key, &record, 0);
+  ups_status_t st = ups_db_insert(cattbl->autoidx.db, txn, &key, &record, 0);
   if (unlikely(st != 0)) {
     log_error("ups_db_insert", st);
     return 1;
@@ -1150,7 +1213,7 @@ insert_auto_index(UpscaledbShare *share, TABLE *table, uint8_t *buf,
 }
 
 static inline int
-insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
+insert_primary_key(Catalogue::Index *catidx, TABLE *table, uint8_t *buf,
                 ups_txn_t *txn, ByteVector &key_arena, ByteVector &record_arena)
 {
   ups_key_t key = key_from_row(table, buf, 0, key_arena);
@@ -1160,10 +1223,10 @@ insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
   // key is unique, and we can specify the flag UPS_OVERWRITE (which is much
   // faster)
   uint32_t flags = 0;
-  if (likely(dbdesc->enable_duplicates))
+  if (likely(catidx->enable_duplicates))
     flags = UPS_DUPLICATE;
 
-  ups_status_t st = ups_db_insert(dbdesc->db, txn, &key, &record, flags);
+  ups_status_t st = ups_db_insert(catidx->db, txn, &key, &record, flags);
 
   if (unlikely(st == UPS_DUPLICATE_KEY))
     return HA_ERR_FOUND_DUPP_KEY;
@@ -1181,7 +1244,7 @@ insert_primary_key(DbDesc *dbdesc, TABLE *table, uint8_t *buf,
 }
 
 static inline int
-insert_secondary_key(DbDesc *dbdesc, TABLE *table, int index,
+insert_secondary_key(Catalogue::Index *catidx, TABLE *table, int index,
                 uint8_t *buf, ups_txn_t *txn, ByteVector &key_arena,
                 ByteVector &primary_key)
 {
@@ -1193,10 +1256,10 @@ insert_secondary_key(DbDesc *dbdesc, TABLE *table, int index,
   ups_key_t key = key_from_row(table, buf, index, key_arena);
 
   uint32_t flags = 0;
-  if (likely(dbdesc->enable_duplicates))
+  if (likely(catidx->enable_duplicates))
     flags = UPS_DUPLICATE;
 
-  ups_status_t st = ups_db_insert(dbdesc->db, txn, &key, &record, flags);
+  ups_status_t st = ups_db_insert(catidx->db, txn, &key, &record, flags);
   if (unlikely(st == UPS_DUPLICATE_KEY))
     return HA_ERR_FOUND_DUPP_KEY;
   if (unlikely(st != 0)) {
@@ -1207,21 +1270,21 @@ insert_secondary_key(DbDesc *dbdesc, TABLE *table, int index,
 }
 
 static inline int
-insert_multiple_indices(UpscaledbShare *share, TABLE *table, uint8_t *buf,
+insert_multiple_indices(Catalogue::Table *cattbl, TABLE *table, uint8_t *buf,
                 ups_txn_t *txn, ByteVector &key_arena, ByteVector &record_arena)
 {
   // is this an automatically generated index?
-  if (share->autoidx.db) {
-    int rc = insert_auto_index(share, table, buf, txn, key_arena, record_arena);
+  if (cattbl->autoidx.db) {
+    int rc = insert_auto_index(cattbl, table, buf, txn, key_arena, record_arena);
     if (unlikely(rc))
       return rc;
   }
 
-  for (int index = 0; index < (int)share->dbmap.size(); index++) {
+  for (int index = 0; index < (int)cattbl->indices.size(); index++) {
     // is this the primary index?
-    if (share->dbmap[index].is_primary_index) {
+    if (cattbl->indices[index].is_primary_index) {
       assert(index == 0);
-      int rc = insert_primary_key(&share->dbmap[index], table, buf, txn,
+      int rc = insert_primary_key(&cattbl->indices[index], table, buf, txn,
                       key_arena, record_arena);
       if (unlikely(rc))
         return rc;
@@ -1229,7 +1292,7 @@ insert_multiple_indices(UpscaledbShare *share, TABLE *table, uint8_t *buf,
     // is this a secondary index? the last parameter is a ByteVector with
     // the primary key.
     else {
-      int rc = insert_secondary_key(&share->dbmap[index], table, index,
+      int rc = insert_secondary_key(&cattbl->indices[index], table, index,
                       buf, txn, record_arena, key_arena);
       if (unlikely(rc))
         return rc;
@@ -1295,12 +1358,13 @@ delete_from_secondary(ups_db_t *db, TABLE *table, int index, const uint8_t *buf,
 }
 
 static inline int
-delete_multiple_indices(ups_cursor_t *cursor, UpscaledbShare *share,
-                TABLE *table, const uint8_t *buf, ByteVector &key_arena)
+delete_multiple_indices(ups_cursor_t *cursor, Catalogue::Database *catdb,
+                Catalogue::Table *cattbl, TABLE *table, const uint8_t *buf,
+                ByteVector &key_arena)
 {
   ups_status_t st;
 
-  TxnProxy txnp(share->env);
+  TxnProxy txnp(catdb->env);
   if (unlikely(!txnp.txn))
     return 1;
 
@@ -1308,7 +1372,7 @@ delete_multiple_indices(ups_cursor_t *cursor, UpscaledbShare *share,
 
   // The cursor is positioned on the primary key. If the index was auto-
   // generated then fetch the key, otherwise extract the key from |buf|
-  if (share->autoidx.db) {
+  if (cattbl->autoidx.db) {
     st = ups_cursor_move(cursor, &primary_key, 0, 0);
     if (unlikely(st != 0)) {
       log_error("ups_cursor_erase", st);
@@ -1320,16 +1384,16 @@ delete_multiple_indices(ups_cursor_t *cursor, UpscaledbShare *share,
     primary_key = key;
   }
 
-  for (int index = 0; index < (int)share->dbmap.size(); index++) {
-    Field *field = share->dbmap[index].field;
+  for (int index = 0; index < (int)cattbl->indices.size(); index++) {
+    Field *field = cattbl->indices[index].field;
     assert(field->m_indexed == true && field->stored_in_db != false);
     (void)field;
 
     // is this the primary index?
-    if (share->dbmap[index].is_primary_index) {
+    if (cattbl->indices[index].is_primary_index) {
       // TODO can we use |cursor|? no, because it's not part of the txn :-/
       assert(index == 0);
-      st = ups_db_erase(share->dbmap[index].db, txnp.txn, &primary_key, 0);
+      st = ups_db_erase(cattbl->indices[index].db, txnp.txn, &primary_key, 0);
       if (unlikely(st != 0)) {
         log_error("ups_db_erase", st);
         return 1;
@@ -1337,7 +1401,7 @@ delete_multiple_indices(ups_cursor_t *cursor, UpscaledbShare *share,
     }
     // is this a secondary index?
     else {
-      int rc = delete_from_secondary(share->dbmap[index].db, table, index,
+      int rc = delete_from_secondary(cattbl->indices[index].db, table, index,
                     buf, txnp.txn, &primary_key, key_arena);
       if (unlikely(rc != 0))
         return rc;
@@ -1502,8 +1566,8 @@ UpscaledbHandler::write_row(uchar *buf)
   DBUG_ENTER("UpscaledbHandler::write_row");
 
   // no index? then use the one which was automatically generated
-  if (share->dbmap.empty())
-    DBUG_RETURN(insert_auto_index(share, table, buf, 0,
+  if (cattbl->indices.empty())
+    DBUG_RETURN(insert_auto_index(cattbl, table, buf, 0,
                             key_arena, record_arena));
 
   // auto-incremented index? then get a new value
@@ -1514,8 +1578,8 @@ UpscaledbHandler::write_row(uchar *buf)
   }
 
   // only one index? then use a temporary transaction
-  if (share->dbmap.size() == 1 && !share->autoidx.db) {
-    int rc = insert_primary_key(&share->dbmap[0], table, buf, 0,
+  if (cattbl->indices.size() == 1 && !cattbl->autoidx.db) {
+    int rc = insert_primary_key(&cattbl->indices[0], table, buf, 0,
                             key_arena, record_arena);
     if (unlikely(rc == HA_ERR_FOUND_DUPP_KEY))
       duplicate_error_index = 0;
@@ -1525,11 +1589,11 @@ UpscaledbHandler::write_row(uchar *buf)
 
   // multiple indices? then create a new transaction and update
   // all indices
-  TxnProxy txnp(share->env);
+  TxnProxy txnp(catdb->env);
   if (unlikely(!txnp.txn))
     DBUG_RETURN(1);
 
-  int rc = insert_multiple_indices(share, table, buf, txnp.txn,
+  int rc = insert_multiple_indices(cattbl, table, buf, txnp.txn,
                   key_arena, record_arena);
   if (unlikely(rc == HA_ERR_FOUND_DUPP_KEY))
     duplicate_error_index = 0;
@@ -1561,7 +1625,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
 
   // fastest code path: if there's no index then use the cursor to overwrite
   // the record
-  if (share->dbmap.empty()) {
+  if (cattbl->indices.empty()) {
     assert(cursor != 0);
     st = ups_cursor_overwrite(cursor, &record, 0);
     if (unlikely(st != 0)) {
@@ -1577,7 +1641,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   bool changed[MAX_KEY];
   ByteVector tmp1;
   ByteVector tmp2;
-  for (size_t i = 0; i < share->dbmap.size(); i++) {
+  for (size_t i = 0; i < cattbl->indices.size(); i++) {
     ups_key_t oldkey = key_from_row(table, (uchar *)old_buf, i, tmp1);
     ups_key_t newkey = key_from_row(table, new_buf, i, key_arena);
     changed[i] = !are_keys_equal(&oldkey, &newkey);
@@ -1585,17 +1649,18 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
 
   // fast code path: if there's just one primary key then try to overwrite
   // the record, or re-insert if the key was modified
-  if (share->dbmap.size() == 1 && share->autoidx.db == 0) {
+  if (cattbl->indices.size() == 1 && cattbl->autoidx.db == 0) {
     // if both keys are equal: simply overwrite the record of the
     // current key
     if (!changed[0]) {
       if (likely(cursor != 0)) {
-        assert(ups_cursor_get_database(cursor) == share->dbmap[0].db);
+        assert(ups_cursor_get_database(cursor) == cattbl->indices[0].db);
         st = ups_cursor_overwrite(cursor, &record, 0);
       }
       else {
         ups_key_t key = key_from_row(table, (uchar *)old_buf, 0, tmp1);
-        st = ups_db_insert(share->dbmap[0].db, 0, &key, &record, UPS_OVERWRITE);
+        st = ups_db_insert(cattbl->indices[0].db, 0, &key,
+                        &record, UPS_OVERWRITE);
       }
       if (unlikely(st != 0)) {
         log_error("ups_cursor_overwrite", st);
@@ -1610,12 +1675,12 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
     // otherwise delete the old row, insert the new one. Inserting can fail if
     // the key is not unique, therefore both operations are wrapped
     // in a single transaction.
-    TxnProxy txnp(share->env);
+    TxnProxy txnp(catdb->env);
     if (unlikely(!txnp.txn))
       DBUG_RETURN(1);
 
     // TODO can we use the cursor?? no - not in the transaction :-/
-    ups_db_t *db = share->dbmap[0].db;
+    ups_db_t *db = cattbl->indices[0].db;
     st = ups_db_erase(db, txnp.txn, &oldkey, 0);
     if (unlikely(st != 0))
       DBUG_RETURN(1);
@@ -1633,16 +1698,17 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   // More than one index? Update all indices that were changed.
   // Again wrap all of this in a single transaction, in case we fail
   // to insert the new row.
-  TxnProxy txnp(share->env);
+  TxnProxy txnp(catdb->env);
   if (unlikely(!txnp.txn))
     DBUG_RETURN(1);
 
   ups_key_t new_primary_key = key_from_row(table, new_buf, 0, record_arena);
 
   // Are we overwriting an auto-generated index?
-  if (share->autoidx.db) {
+  if (cattbl->autoidx.db) {
     ups_key_t k = ups_make_key(ref, sizeof(uint32_t));
-    st = ups_db_insert(share->autoidx.db, txnp.txn, &k, &record, UPS_OVERWRITE);
+    st = ups_db_insert(cattbl->autoidx.db, txnp.txn, &k,
+                    &record, UPS_OVERWRITE);
     if (unlikely(st != 0))
       DBUG_RETURN(1);
   }
@@ -1653,11 +1719,11 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   // TODO can we use the cursor? -> no, it's not in the txn :-/
   if (changed[0]) {
     ups_key_t oldkey = key_from_row(table, (uchar *)old_buf, 0, key_arena);
-    st = ups_db_erase(share->dbmap[0].db, txnp.txn, &oldkey, 0);
+    st = ups_db_erase(cattbl->indices[0].db, txnp.txn, &oldkey, 0);
     if (unlikely(st != 0))
       DBUG_RETURN(1);
   }
-  st = ups_db_insert(share->dbmap[0].db, txnp.txn, &new_primary_key, &record,
+  st = ups_db_insert(cattbl->indices[0].db, txnp.txn, &new_primary_key, &record,
                         UPS_OVERWRITE);
   if (unlikely(st != 0))
     DBUG_RETURN(1);
@@ -1666,21 +1732,21 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
   // 1. if the primary key was changed then their record has to be
   //    overwritten
   // 2. if the secondary key was changed then re-insert it
-  for (size_t i = 1; i < share->dbmap.size(); i++) {
+  for (size_t i = 1; i < cattbl->indices.size(); i++) {
     ups_record_t new_primary_record = ups_make_record(new_primary_key.data,
             new_primary_key.size);
     ups_key_t old_primary_key = key_from_row(table, old_buf, 0, tmp1);
     ups_key_t newkey = key_from_row(table, (uchar *)new_buf, i, tmp2);
 
     if (changed[i]) {
-      int rc = delete_from_secondary(share->dbmap[i].db, table, i,
+      int rc = delete_from_secondary(cattbl->indices[i].db, table, i,
                             old_buf, txnp.txn, &old_primary_key, key_arena);
       if (unlikely(rc != 0))
         DBUG_RETURN(rc);
       uint32_t flags = 0;
-      if (likely(share->dbmap[i].enable_duplicates))
+      if (likely(cattbl->indices[i].enable_duplicates))
         flags = UPS_DUPLICATE;
-      st = ups_db_insert(share->dbmap[i].db, txnp.txn, &newkey,
+      st = ups_db_insert(cattbl->indices[i].db, txnp.txn, &newkey,
                             &new_primary_record, flags);
       if (unlikely(st == UPS_DUPLICATE_KEY))
         DBUG_RETURN(HA_ERR_FOUND_DUPP_KEY);
@@ -1691,7 +1757,7 @@ UpscaledbHandler::update_row(const uchar *old_buf, uchar *new_buf)
       ups_key_t oldkey = key_from_row(table, (uchar *)old_buf, i, tmp1);
       ups_record_t old_primary_record = ups_make_record(old_primary_key.data,
               old_primary_key.size);
-      CursorProxy cp(locate_secondary_key(share->dbmap[i].db, txnp.txn,
+      CursorProxy cp(locate_secondary_key(cattbl->indices[i].db, txnp.txn,
                                 &oldkey, &old_primary_record));
       assert(cp.cursor != 0);
       st = ups_cursor_overwrite(cp.cursor, &new_primary_record, 0);
@@ -1722,13 +1788,13 @@ UpscaledbHandler::delete_row(const uchar *buf)
 
   // fast code path: if there's just one index then use the cursor to
   // delete the record
-  if (share->dbmap.size() <= 1) {
+  if (cattbl->indices.size() <= 1) {
     if (likely(cursor != 0))
       st = ups_cursor_erase(cursor, 0);
     else {
-      assert(share->dbmap.size() == 1);
+      assert(cattbl->indices.size() == 1);
       ups_key_t key = key_from_row(table, buf, 0, key_arena);
-      st = ups_db_erase(share->dbmap[0].db, 0, &key, 0);
+      st = ups_db_erase(cattbl->indices[0].db, 0, &key, 0);
     }
 
     if (unlikely(st != 0)) {
@@ -1740,7 +1806,8 @@ UpscaledbHandler::delete_row(const uchar *buf)
 
   // otherwise (if there are multiple indices) then delete the key from
   // each index
-  int rc = delete_multiple_indices(cursor, share, table, buf, key_arena);
+  int rc = delete_multiple_indices(cursor, catdb, cattbl, table,
+                  buf, key_arena);
   DBUG_RETURN(rc);
 }
 
@@ -1751,10 +1818,10 @@ UpscaledbHandler::index_init(uint idx, bool sorted)
 
   active_index = idx;
 
-  assert(share != 0);
+  assert(cattbl != 0);
 
   // from which index are we reading?
-  ups_db_t *db = share->dbmap[idx].db;
+  ups_db_t *db = cattbl->indices[idx].db;
 
   // if there's a cursor then make sure it's for the correct index database
   if (cursor && ups_cursor_get_database(cursor) == db)
@@ -1790,7 +1857,7 @@ UpscaledbHandler::index_read(uchar *buf, const uchar *keybuf,
   MYSQL_INDEX_READ_ROW_START(table_share->db.str, table_share->table_name.str);
 
   bool read_primary_index = (active_index == 0 || active_index == MAX_KEY)
-                                && share->autoidx.db == 0;
+                                && cattbl->autoidx.db == 0;
 
   // when reading from the primary index: directly fetch record into |buf| 
   // if the row has fixed length
@@ -1859,7 +1926,7 @@ UpscaledbHandler::index_read(uchar *buf, const uchar *keybuf,
     else if (!read_primary_index) {
       // Auto-generated index? Then store the internal row-id (which is a 32bit
       // record number)
-      if (share->autoidx.db != 0) {
+      if (cattbl->autoidx.db != 0) {
         assert(ref_length == sizeof(uint32_t));
         assert(record.size == sizeof(uint32_t));
         *(uint32_t *)ref = *(uint32_t *)record.data;
@@ -1871,9 +1938,9 @@ UpscaledbHandler::index_read(uchar *buf, const uchar *keybuf,
         rec.data = buf;
         rec.flags = UPS_RECORD_USER_ALLOC;
       }
-      st = ups_db_find(share->autoidx.db
-                        ? share->autoidx.db
-                        : share->dbmap[0].db, 0, &key, &rec, 0);
+      st = ups_db_find(cattbl->autoidx.db
+                        ? cattbl->autoidx.db
+                        : cattbl->indices[0].db, 0, &key, &rec, 0);
       if (likely(st == 0) && !row_is_fixed_length(table))
         rec = unpack_record(table, &rec, buf);
     }
@@ -1920,7 +1987,7 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
   else {
     // if we fetched the record from an auto-generated index then store the
     // row id; it will be required in ::position()
-    if (share->autoidx.db != 0) {
+    if (cattbl->autoidx.db != 0) {
       ups_key_t key = ups_make_key(&recno_row_id, sizeof(recno_row_id));
       key.flags = UPS_KEY_USER_ALLOC;
       st = ups_cursor_move(cursor, &key, &record, flags);
@@ -1950,14 +2017,14 @@ UpscaledbHandler::index_operation(uchar *keybuf, uint32_t keylen,
 
   // if we fetched the record from a secondary index: lookup the actual row
   // from the primary index
-  if (!share->dbmap.empty() && (active_index > 0 && active_index < MAX_KEY)) {
+  if (!cattbl->indices.empty() && (active_index > 0 && active_index < MAX_KEY)) {
     ups_key_t key = ups_make_key(record.data, (uint16_t)record.size);
     ups_record_t rec = ups_make_record(0, 0);
     if (row_is_fixed_length(table)) {
       rec.data = buf;
       rec.flags = UPS_RECORD_USER_ALLOC;
     }
-    st = ups_db_find(share->autoidx.db ? share->autoidx.db : share->dbmap[0].db,
+    st = ups_db_find(cattbl->autoidx.db ? cattbl->autoidx.db : cattbl->indices[0].db,
                         0, &key, &rec, 0); // or autoidx.db??
     if (unlikely(st != 0))
       return ups_status_to_error(table, "ups_cursor_move", st);
@@ -2060,14 +2127,14 @@ UpscaledbHandler::rnd_init(bool scan)
 {
   DBUG_ENTER("UpscaledbHandler::rnd_init");
 
-  assert(share != 0);
+  assert(cattbl != 0);
 
   if (cursor)
     ups_cursor_close(cursor);
 
-  ups_db_t *db = share->autoidx.db;
+  ups_db_t *db = cattbl->autoidx.db;
   if (!db)
-    db = share->dbmap[0].db;
+    db = cattbl->indices[0].db;
 
   ups_status_t st = ups_cursor_create(&cursor, db, 0, 0);
   if (unlikely(st != 0)) {
@@ -2113,8 +2180,8 @@ UpscaledbHandler::get_auto_increment(ulonglong offset, ulonglong increment,
                         ulonglong *nb_reserved_values)
 {
   *nb_reserved_values = nb_desired_values;
-  *first_value = share->autoinc_value + 1;
-  share->autoinc_value += nb_desired_values;
+  *first_value = cattbl->autoinc_value + 1;
+  cattbl->autoinc_value += nb_desired_values;
 }
 
 void
@@ -2123,15 +2190,15 @@ UpscaledbHandler::update_create_info(HA_CREATE_INFO *create_info)
   // called from ALTER TABLE ... AUTO_INCREMENT=XX? then don't overwrite
   // the new value!
   if (create_info->auto_increment_value > 0) {
-    share->initial_autoinc_value = create_info->auto_increment_value;
-    share->autoinc_value = create_info->auto_increment_value;
+    cattbl->initial_autoinc_value = create_info->auto_increment_value;
+    cattbl->autoinc_value = create_info->auto_increment_value;
     return;
   }
 
   if (unlikely(next_insert_id != 0))
     create_info->auto_increment_value = next_insert_id;
   else
-    create_info->auto_increment_value = share->initial_autoinc_value;
+    create_info->auto_increment_value = cattbl->initial_autoinc_value;
 }
 
 // This function is used to perform a look-up on a secondary index. It
@@ -2143,7 +2210,7 @@ UpscaledbHandler::position(const uchar *buf)
 
   // Auto-generated index? Then store the internal row-id (which is a 32bit
   // record number)
-  if (share->autoidx.db != 0) {
+  if (cattbl->autoidx.db != 0) {
     assert(ref_length == sizeof(uint32_t));
     *(uint32_t *)ref = recno_row_id;
     DBUG_VOID_RETURN;
@@ -2186,16 +2253,16 @@ UpscaledbHandler::rnd_pos(uchar *buf, uchar *pos)
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str,
                        TRUE);
 
-  assert(share != 0);
+  assert(cattbl != 0);
   assert(active_index == MAX_KEY);
 
   bool is_fixed_row_length = row_is_fixed_length(table);
   ups_record_t rec = ups_make_record(0, 0);
   ups_key_t key = ups_make_key(0, 0);
 
-  ups_db_t *db = share->autoidx.db;
+  ups_db_t *db = cattbl->autoidx.db;
   if (!db)
-    db = share->dbmap[0].db;
+    db = cattbl->indices[0].db;
 
   key.data = pos;
   key.size = table->key_info
@@ -2252,7 +2319,7 @@ UpscaledbHandler::info(uint flag)
   DBUG_ENTER("UpscaledbHandler::info");
 
   if (flag & HA_STATUS_AUTO)
-    stats.auto_increment_value = share->initial_autoinc_value;
+    stats.auto_increment_value = cattbl->initial_autoinc_value;
 
   if (flag & HA_STATUS_ERRKEY)
     errkey = duplicate_error_index;
@@ -2281,13 +2348,13 @@ UpscaledbHandler::delete_all_rows()
 
   close(); // closes the cursor
 
-  ups_status_t st = delete_all_databases(share, table);
+  ups_status_t st = delete_all_databases(catdb, cattbl, table);
   if (unlikely(st)) {
     log_error("delete_all_databases", st);
     DBUG_RETURN(1);
   }
 
-  st = create_all_databases(share, table, &share->config);
+  st = create_all_databases(catdb, cattbl, table, &share->config);
   if (unlikely(st)) {
     log_error("create_all_databases", st);
     DBUG_RETURN(1);
@@ -2305,7 +2372,7 @@ UpscaledbHandler::truncate()
   if (unlikely(err))
     DBUG_RETURN(err);
 
-  share->autoinc_value = 0;
+  cattbl->autoinc_value = 0;
 
   DBUG_RETURN(0);
 }
@@ -2376,11 +2443,15 @@ UpscaledbHandler::delete_table(const char *name)
 {
   DBUG_ENTER("UpscaledbHandler::delete_table");
 
+  // TODO TODO TODO
+  std::string env_name = format_environment_name(name);
+  if (!catdb)
+    catdb = Catalogue::databases[env_name];
+
   // remove the environment from the global cache
-  close_and_remove_share(name, share);
+  close_and_remove_share(name, catdb, share);
 
   // delete all files
-  std::string env_name = format_environment_name(name);
   (void)boost::filesystem::remove(env_name);
   (void)boost::filesystem::remove(env_name + ".jrn0");
   (void)boost::filesystem::remove(env_name + ".jrn1");
@@ -2395,7 +2466,7 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   DBUG_ENTER("UpscaledbHandler::rename_table ");
   close();
 
-  close_and_remove_share(from, share);
+  close_and_remove_share(from, catdb, share);
   rename_create_info(from, to);
 
   std::string from_name = format_environment_name(from);
@@ -2441,7 +2512,7 @@ UpscaledbHandler::records_in_range(uint index, key_range *min_key,
   ups_record_t record = ups_make_record(0, 0);
 
   if (min_key) {
-    st = ups_cursor_create(&min.cursor, share->dbmap[index].db, 0, 0);
+    st = ups_cursor_create(&min.cursor, share->indices[index].db, 0, 0);
     if (unlikely(st)) {
       log_error("ups_cursor_create", st);
       DBUG_RETURN(10);
@@ -2458,7 +2529,7 @@ UpscaledbHandler::records_in_range(uint index, key_range *min_key,
   }
 
   if (max_key) {
-    st = ups_cursor_create(&max.cursor, share->dbmap[index].db, 0, 0);
+    st = ups_cursor_create(&max.cursor, share->indices[index].db, 0, 0);
     if (unlikely(st)) {
       log_error("ups_cursor_create", st);
       DBUG_RETURN(10);
@@ -2478,7 +2549,7 @@ UpscaledbHandler::records_in_range(uint index, key_range *min_key,
   snprintf(query, sizeof(query), "COUNT($key) FROM DATABASE %d", dbname(field));
 
   uqi_result_t *result;
-  st = uqi_select_range(share->env, query, min.cursor, max.cursor, &result);
+  st = uqi_select_range(catdb->env, query, min.cursor, max.cursor, &result);
   if (unlikely(st != 0)) {
     log_error("uqi_select_range", st);
     DBUG_RETURN(10);
