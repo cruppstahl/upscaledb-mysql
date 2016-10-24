@@ -30,17 +30,8 @@
 
 typedef std::vector<uint8_t> ByteVector;
 
-struct UpscaledbShare {
-  UpscaledbShare() {
-  }
-
-  // The configuration, as specified in the COMMENT and the .cnf file
-  Configuration config;
-};
-
 struct UpscaledbTableShare : public Handler_share {
-  UpscaledbTableShare()
-    : share(0) {
+  UpscaledbTableShare() {
     thr_lock_init(&lock);
   }
 
@@ -49,15 +40,12 @@ struct UpscaledbTableShare : public Handler_share {
   }
 
   THR_LOCK lock;
-
-  // the upscaledb Environment
-  UpscaledbShare *share;
 };
 
 struct UpscaledbHandler : handler {
   // Constructor
   UpscaledbHandler(handlerton *hton, TABLE_SHARE *table_arg)
-    : handler(hton, table_arg), share(0), catdb(0), cattbl(0), cursor(0),
+    : handler(hton, table_arg), catdb(0), cattbl(0), cursor(0),
       first_call_after_position(false), recno_row_id(0) {
   }
 
@@ -267,9 +255,6 @@ struct UpscaledbHandler : handler {
 
   // Allocates or returns the shared data
   UpscaledbTableShare *allocate_or_get_share();
-
-  // Shared data between all handlers which access this table
-  UpscaledbShare *share;
 
   // The (global) Database object; stores the upscaledb environment
   Catalogue::Database *catdb;

@@ -44,14 +44,6 @@
 
 #define CUSTOM_COMPARE_NAME "varlencmp"
 
-struct CreateInfo {
-  CreateInfo(HA_CREATE_INFO *ci)
-    : autoinc_value(ci->auto_increment_value) {
-  }
-
-  uint64_t autoinc_value;
-};
-
 struct KeyPart {
   KeyPart(uint32_t type_ = 0, uint32_t length_ = 0)
     : type(type_), length(length_) {
@@ -152,11 +144,6 @@ custom_compare_func(ups_db_t *db, const uint8_t *lhs, uint32_t lhs_length,
 static std::map<uint16_t, ups_srv_t *> servers;
 static boost::mutex servers_mutex;
 
-static std::map<std::string, UpscaledbShare *> shares;
-static boost::mutex shares_mutex;
-
-static std::map<std::string, CreateInfo *> create_infos;
-static boost::mutex create_infos_mutex;
 
 static void
 log_error_impl(const char *file, int line, const char *function,
@@ -223,35 +210,6 @@ struct CursorProxy {
   ups_cursor_t *cursor;
 };
 
-static inline void
-store_create_info(const char *table_name, CreateInfo *create_info)
-{
-  boost::mutex::scoped_lock lock(create_infos_mutex);
-  create_infos[table_name] = create_info;
-}
-
-static inline CreateInfo *
-fetch_create_info(const char *table_name)
-{
-  boost::mutex::scoped_lock lock(create_infos_mutex);
-  return create_infos[table_name];
-}
-
-static inline void
-rename_create_info(const char *old_name, const char *new_name)
-{
-  boost::mutex::scoped_lock lock(create_infos_mutex);
-  CreateInfo *ci = create_infos[old_name];
-  create_infos[new_name] = ci;
-  create_infos.erase(create_infos.find(old_name));
-}
-
-static inline void
-store_share_locked(const char *table_name, UpscaledbShare *share)
-{
-  shares[table_name] = share;
-}
-
 static inline std::string
 format_environment_name(const char *name)
 {
@@ -260,19 +218,16 @@ format_environment_name(const char *name)
 }
 
 static inline void
-close_and_remove_share(const char *table_name, Catalogue::Database *catdb,
-                UpscaledbShare *share)
+close_and_remove_share(const char *table_name, Catalogue::Database *catdb)
 {
-  boost::mutex::scoped_lock lock1(shares_mutex);
   boost::mutex::scoped_lock lock2(servers_mutex);
   boost::mutex::scoped_lock lock3(Catalogue::databases_mutex);
   ups_env_t *env = catdb ? catdb->env : 0;
-  ups_srv_t *srv = share ? servers[share->config.server_port] : 0;
+  ups_srv_t *srv = catdb ? servers[catdb->config.server_port] : 0;
 
   // also remove the environment from a server
-  if (env && srv) {
+  if (env && srv)
     (void)ups_srv_remove_env(srv, env);
-  }
 
   // close the environment
   if (env) {
@@ -281,9 +236,6 @@ close_and_remove_share(const char *table_name, Catalogue::Database *catdb,
       log_error("ups_env_close", st);
     catdb->env = 0;
   }
-
-  if (shares.find(table_name) != shares.end())
-    shares.erase(shares.find(table_name));
 
   // TODO TODO TODO
   std::string env_name = format_environment_name(table_name);
@@ -700,13 +652,8 @@ key_exists(ups_db_t *db, ups_key_t *key)
 }
 
 static inline uint64_t
-initialize_autoinc(const char *name, KEY_PART_INFO *key_part, ups_db_t *db)
+initialize_autoinc(KEY_PART_INFO *key_part, ups_db_t *db)
 {
-  // if the database is empty: read from the cached create_info object
-  CreateInfo *create_info = fetch_create_info(name);
-  if (create_info)
-    return create_info->autoinc_value > 0 ? create_info->autoinc_value - 1 : 0;
-
   // if the database is not empty: read the maximum value
   if (db) {
     CursorProxy cp(db, 0);
@@ -780,7 +727,7 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
   // key info for the primary key
   std::pair<uint32_t, uint32_t> primary_type_info;
 
-  assert(cattbl->indices.empty());
+  assert(cattbl ? cattbl->indices.empty() : true);
 
   ups_register_compare(CUSTOM_COMPARE_NAME, custom_compare_func);
 
@@ -875,7 +822,8 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
       return st;
     }
 
-    cattbl->indices.push_back(Catalogue::Index(db, field, enable_duplicates,
+    if (cattbl)
+      cattbl->indices.push_back(Catalogue::Index(db, field, enable_duplicates,
                             is_primary_key, key_type));
   }
 
@@ -897,7 +845,8 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
       log_error("ups_env_create_db", st);
       return st;
     }
-    cattbl->autoidx = Catalogue::Index(db, 0, false, true, UPS_TYPE_UINT32);
+    if (cattbl)
+      cattbl->autoidx = Catalogue::Index(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
   return 0;
@@ -952,19 +901,19 @@ UpscaledbHandler::create(const char *name, TABLE *table,
     Catalogue::databases[db_name] = catdb;
   }
 
-  // Now create the table information. Use a temporary structure instead
-  // of a global (persisted) one, since the Field pointers are only
-  // temporary and will be destroyed by the caller
+  // Now create the table information
   std::string tbl_name = boost::filesystem::path(name).filename().string();
   assert(catdb->tables.find(tbl_name) == catdb->tables.end());
-  Catalogue::Table tbl(tbl_name);
-
-  UpscaledbShare tmpshare;
+  cattbl = catdb->tables[tbl_name];
+  if (!cattbl) {
+    cattbl = new Catalogue::Table(tbl_name);
+    catdb->tables[tbl_name] = cattbl;
+  }
 
   // parse the configuration settings in the table's COMMENT
-  tmpshare.config = Configuration(false);
+  catdb->config = Configuration(false);
   if (create_info->comment.length > 0) {
-    if (!parse_comment_list(create_info->comment.str, tmpshare.config)) {
+    if (!parse_comment_list(create_info->comment.str, catdb->config)) {
       sql_print_error("Invalid \"CREATE TABLE\" comment");
       DBUG_RETURN(1);
     }
@@ -973,14 +922,14 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   // write the settings to the configuration file; the user can then
   // modify them
   write_configuration_settings(env_name, create_info->comment.str,
-                  tmpshare.config);
+                  catdb->config);
 
   ups_status_t st = 0;
   if (catdb->env == 0) {
     st = ups_env_create(&catdb->env, env_name.c_str(),
-                            tmpshare.config.flags, 0644,
-                            tmpshare.config.params.empty() == false
-                                ? &tmpshare.config.params[0]
+                            catdb->config.flags, 0644,
+                            catdb->config.params.empty() == false
+                                ? &catdb->config.params[0]
                                 : 0);
     if (st != 0) {
       log_error("ups_env_create", st);
@@ -988,25 +937,26 @@ UpscaledbHandler::create(const char *name, TABLE *table,
     }
   }
 
-  // create a database for each index.
-  st = create_all_databases(catdb, &tbl, table, &tmpshare.config);
+  // create a database for each index
+  st = create_all_databases(catdb, cattbl, table, &catdb->config);
 
-  // store the create_info object; might be required later
-  if (likely(st == 0))
-    store_create_info(name, new CreateInfo(create_info));
+  // persist the initial autoincrement-value
+  cattbl->autoinc_value = create_info->auto_increment_value;
 
-  // We have to clean up the database handles before |tbl| goes out
-  // of scope
-  // TODO move to Catalogue::~Table
-  for (size_t i = 0; i < tbl.indices.size(); i++) {
-    st = ups_db_close(tbl.indices[i].db, 0);
+  // We have to clean up the database handles because cattbl->indices[].field
+  // will be invalidated by the caller
+  // TODO move this to a function
+  for (size_t i = 0; i < cattbl->indices.size(); i++) {
+    st = ups_db_close(cattbl->indices[i].db, 0);
     if (unlikely(st != 0))
       log_error("ups_db_close", st);
   }
-  if (tbl.autoidx.db != 0) {
-    st = ups_db_close(tbl.autoidx.db, 0);
+  cattbl->indices.clear();
+  if (cattbl->autoidx.db != 0) {
+    st = ups_db_close(cattbl->autoidx.db, 0);
     if (unlikely(st != 0))
       log_error("ups_db_close", st);
+    cattbl->autoidx.db = 0;
   }
 
   DBUG_RETURN(st ? 1 : 0);
@@ -1037,39 +987,21 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   // Now create the table information
   std::string tbl_name = boost::filesystem::path(name).filename().string();
   cattbl = catdb->tables[tbl_name];
-  bool already_initialized = true;
+  bool already_initialized = false;
   if (!cattbl) {
     cattbl = new Catalogue::Table(tbl_name);
     catdb->tables[tbl_name] = cattbl;
-    already_initialized = false;
   }
 
-  assert(share == 0);
+  if (!cattbl->indices.empty() || cattbl->autoidx.db != 0)
+    already_initialized = true;
+
   UpscaledbTableShare *table_share = allocate_or_get_share();
-  share = table_share->share;
-  if (share) { // already initialized?
-    ref_length = cattbl->ref_length;
-    DBUG_RETURN(0);
-  }
-
   thr_lock_data_init(&table_share->lock, &lock_data, NULL);
 
-  boost::mutex::scoped_lock lock1(shares_mutex);
-
-  // it's possible that a different thread has opened the Environment in
-  // the meantime
-  share = shares[name];
-  if (share) {
-    ref_length = cattbl->ref_length;
-    DBUG_RETURN(0);
-  }
-
-  if (!share)
-    share = new UpscaledbShare;
-
   // parse the configuration settings in the table's .cnf file
-  share->config = Configuration(true);
-  if (!parse_file(env_name + ".cnf", share->config)) {
+  catdb->config = Configuration(true);
+  if (!parse_file(env_name + ".cnf", catdb->config)) {
     sql_print_error("Invalid configuration file '%s.cnf'", env_name.c_str());
     DBUG_RETURN(1);
   }
@@ -1080,28 +1012,26 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   // Temporary databases are opened in memory; read-only databases are
   // opened in read-only mode
   if (mode & O_RDONLY)
-    share->config.flags |= UPS_READ_ONLY;
+    catdb->config.flags |= UPS_READ_ONLY;
   if (mode & HA_OPEN_TMP_TABLE)
-    share->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
+    catdb->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
   else
-    share->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
+    catdb->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
 
   // open the Environment
   recovery_table = table;
   ups_status_t st = 0;
   if (catdb->env == 0) {
     st = ups_env_open(&catdb->env, env_name.c_str(),
-                                share->config.flags,
-                                share->config.params.empty() == false
-                                    ? &share->config.params[0]
+                                catdb->config.flags,
+                                catdb->config.params.empty() == false
+                                    ? &catdb->config.params[0]
                                     : 0);
     if (unlikely(st != 0)) {
       log_error("ups_env_open", st);
       DBUG_RETURN(1);
     }
   }
-
-  store_share_locked(name, share);
 
   ups_db_t *db;
 
@@ -1154,8 +1084,7 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     if (field == table->found_next_number_field) {
       for (uint32_t k = 0; k < key_info->user_defined_key_parts; k++) {
         if (key_info->key_part[k].field == field) {
-          cattbl->autoinc_value = initialize_autoinc(name,
-                          &key_info->key_part[k], db);
+          cattbl->autoinc_value = initialize_autoinc(&key_info->key_part[k], db);
           cattbl->initial_autoinc_value = cattbl->autoinc_value + 1;
           break;
         }
@@ -1175,9 +1104,9 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     cattbl->autoidx = Catalogue::Index(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
-  if (share->config.is_server_enabled)
+  if (catdb->config.is_server_enabled)
     DBUG_RETURN(attach_to_server(catdb->env, name + 1, // skip leading "."
-                            &share->config));
+                            &catdb->config));
 
   DBUG_RETURN(0);
 }
@@ -2354,7 +2283,7 @@ UpscaledbHandler::delete_all_rows()
     DBUG_RETURN(1);
   }
 
-  st = create_all_databases(catdb, cattbl, table, &share->config);
+  st = create_all_databases(catdb, cattbl, table, &catdb->config);
   if (unlikely(st)) {
     log_error("create_all_databases", st);
     DBUG_RETURN(1);
@@ -2449,7 +2378,7 @@ UpscaledbHandler::delete_table(const char *name)
     catdb = Catalogue::databases[env_name];
 
   // remove the environment from the global cache
-  close_and_remove_share(name, catdb, share);
+  close_and_remove_share(name, catdb);
 
   // delete all files
   (void)boost::filesystem::remove(env_name);
@@ -2466,8 +2395,8 @@ UpscaledbHandler::rename_table(const char *from, const char *to)
   DBUG_ENTER("UpscaledbHandler::rename_table ");
   close();
 
-  close_and_remove_share(from, catdb, share);
-  rename_create_info(from, to);
+  close_and_remove_share(from, catdb);
+  // rename_create_info(from, to); TODO
 
   std::string from_name = format_environment_name(from);
   std::string to_name = format_environment_name(to);

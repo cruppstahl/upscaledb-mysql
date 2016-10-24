@@ -27,6 +27,8 @@
 
 #include <ups/upscaledb_int.h>
 
+#include "configuration.h"
+
 class Field;
 
 namespace Catalogue {
@@ -101,6 +103,9 @@ struct Database {
 
   // the upscaledb environment with all tables of this database
   ups_env_t *env;
+
+  // The configuration, as specified in the COMMENT and the .cnf file
+  Configuration config;
 
   // The tables, indexed by their name
   typedef std::map<std::string, Table *> TableMap;

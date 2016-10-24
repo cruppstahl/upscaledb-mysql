@@ -69,14 +69,15 @@ o Implement BEGIN and COMMIT
         x Do not close the Environment after it was created; only open it
             if necessary - no, this doesn't work b/c the Field pointers
             are temporary
-        o Merge the CreateInfo structure with the new catalogue
-        o So far this is not a significant change - make sure that all tests
+        x Merge the CreateInfo structure with the new catalogue
+        x So far this is not a significant change - make sure that all tests
             are still running
-        o Also close the structures and clean up
         o Read the configuration from "upscaledb.cnf" - but no longer use
             the COMMENT string!
             o store the configuration directly in the Catalogue
-            o when the environment is created: add an empty ".cnf" template!
+            o when the environment is created: add an empty ".cnf" template
+                (unless it already exists)
+            o improve error handling - parser prints to stderr
         o Remove the remaining traces of the UpscaledbShare and
             UpscaledbTableShare classes
         o Reuse the Environment *per database*, not per table! This is the
@@ -87,6 +88,10 @@ o Implement BEGIN and COMMIT
         o make sure that temp. tables are created in an in-memory environment
         o currently, ::open and ::create lock the databases_mutex for a
             long time; try to increase concurrency
+        o when are the databases closed, when the environment?? currently
+            they are never closed, but it would be nice if they were
+            shut down properly
+        o clean up the code
         o all tests need to run!
 
     o identify the callback functions in the handler that have to be
