@@ -223,7 +223,7 @@ close_and_remove_share(const char *table_name, Catalogue::Database *catdb)
   boost::mutex::scoped_lock lock2(servers_mutex);
   boost::mutex::scoped_lock lock3(Catalogue::databases_mutex);
   ups_env_t *env = catdb ? catdb->env : 0;
-  ups_srv_t *srv = catdb ? servers[catdb->config.server_port] : 0;
+  ups_srv_t *srv = catdb ? servers[catdb->server_port] : 0;
 
   // also remove the environment from a server
   if (env && srv)
@@ -718,7 +718,7 @@ delete_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
 
 static ups_status_t
 create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
-                TABLE *table, Configuration *config)
+                TABLE *table)
 {
   ups_db_t *db;
   int num_indices = table->s->keys;
@@ -809,11 +809,13 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
     }
 
     // is record compression enabled?
+#if 0
     if (is_primary_key && config->record_compression) {
       params[p].name = UPS_PARAM_RECORD_COMPRESSION;
       params[p].value = config->record_compression;
       p++;
     }
+#endif
 
     ups_status_t st = ups_env_create_db(catdb->env, &db, dbname(i),
                                 flags, params);
@@ -834,10 +836,12 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
       {0, 0}
     };
 
+#if 0
     if (config->record_compression) {
       params[0].name = UPS_PARAM_RECORD_COMPRESSION;
       params[0].value = config->record_compression;
     }
+#endif
 
     ups_status_t st = ups_env_create_db(catdb->env, &db, 1,
                                 UPS_RECORD_NUMBER32, &params[0]);
@@ -853,31 +857,51 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
 }
 
 static int
-attach_to_server(ups_env_t *env, const char *path, Configuration *config)
+attach_to_server(Catalogue::Database *catdb, const char *path)
 {
   ups_status_t st;
-  assert(config->is_server_enabled);
+  assert(catdb->is_server_enabled);
 
   boost::mutex::scoped_lock lock(servers_mutex);
-  ups_srv_t *srv = servers[config->server_port];
+  ups_srv_t *srv = servers[catdb->server_port];
   if (!srv) {
     ups_srv_config_t cfg;
     ::memset(&cfg, 0, sizeof(cfg));
-    cfg.port = config->server_port;
+    cfg.port = catdb->server_port;
 
     st = ups_srv_init(&cfg, &srv);
     if (unlikely(st != 0)) {
       log_error("ups_srv_init", st);
       return 1;
     }
-    servers[config->server_port] = srv;
+    servers[catdb->server_port] = srv;
   }
-  st = ups_srv_add_env(srv, env, path);
+  st = ups_srv_add_env(srv, catdb->env, path);
   if (unlikely(st != 0)) {
     log_error("ups_srv_add_env", st);
     return 1;
   }
   return 0;
+}
+
+static void
+close_all_databases(Catalogue::Table *cattbl)
+{
+  ups_status_t st;
+
+  for (size_t i = 0; i < cattbl->indices.size(); i++) {
+    st = ups_db_close(cattbl->indices[i].db, 0);
+    if (unlikely(st != 0))
+      log_error("ups_db_close", st);
+  }
+  cattbl->indices.clear();
+
+  if (cattbl->autoidx.db != 0) {
+    st = ups_db_close(cattbl->autoidx.db, 0);
+    if (unlikely(st != 0))
+      log_error("ups_db_close", st);
+    cattbl->autoidx.db = 0;
+  }
 }
 
 // |name|: full qualified name, i.e. "/database/table"
@@ -911,25 +935,25 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   }
 
   // parse the configuration settings in the table's COMMENT
-  catdb->config = Configuration(false);
   if (create_info->comment.length > 0) {
-    if (!parse_comment_list(create_info->comment.str, catdb->config)) {
-      sql_print_error("Invalid \"CREATE TABLE\" comment");
+    ParserStatus ps = parse_comment_list(create_info->comment.str, catdb);
+    if (!ps.first) {
+      sql_print_error("%s", ps.second.c_str());
       DBUG_RETURN(1);
     }
   }
 
   // write the settings to the configuration file; the user can then
   // modify them
-  write_configuration_settings(env_name, create_info->comment.str,
-                  catdb->config);
+  if (!boost::filesystem::exists(env_name + ".cnf"))
+    write_configuration_settings(env_name, create_info->comment.str, catdb);
 
   ups_status_t st = 0;
   if (catdb->env == 0) {
     st = ups_env_create(&catdb->env, env_name.c_str(),
-                            catdb->config.flags, 0644,
-                            catdb->config.params.empty() == false
-                                ? &catdb->config.params[0]
+                            catdb->flags, 0644,
+                            catdb->params.empty() == false
+                                ? &catdb->params[0]
                                 : 0);
     if (st != 0) {
       log_error("ups_env_create", st);
@@ -938,26 +962,14 @@ UpscaledbHandler::create(const char *name, TABLE *table,
   }
 
   // create a database for each index
-  st = create_all_databases(catdb, cattbl, table, &catdb->config);
+  st = create_all_databases(catdb, cattbl, table);
 
   // persist the initial autoincrement-value
   cattbl->autoinc_value = create_info->auto_increment_value;
 
   // We have to clean up the database handles because cattbl->indices[].field
   // will be invalidated by the caller
-  // TODO move this to a function
-  for (size_t i = 0; i < cattbl->indices.size(); i++) {
-    st = ups_db_close(cattbl->indices[i].db, 0);
-    if (unlikely(st != 0))
-      log_error("ups_db_close", st);
-  }
-  cattbl->indices.clear();
-  if (cattbl->autoidx.db != 0) {
-    st = ups_db_close(cattbl->autoidx.db, 0);
-    if (unlikely(st != 0))
-      log_error("ups_db_close", st);
-    cattbl->autoidx.db = 0;
-  }
+  close_all_databases(cattbl);
 
   DBUG_RETURN(st ? 1 : 0);
 }
@@ -1000,9 +1012,10 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
   thr_lock_data_init(&table_share->lock, &lock_data, NULL);
 
   // parse the configuration settings in the table's .cnf file
-  catdb->config = Configuration(true);
-  if (!parse_file(env_name + ".cnf", catdb->config)) {
-    sql_print_error("Invalid configuration file '%s.cnf'", env_name.c_str());
+  ParserStatus ps = parse_config_file(env_name + ".cnf", catdb, true);
+  if (!ps.first) {
+    sql_print_error("Invalid configuration file '%s.cnf': %s", env_name.c_str(),
+                    ps.second.c_str());
     DBUG_RETURN(1);
   }
 
@@ -1011,21 +1024,21 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
 
   // Temporary databases are opened in memory; read-only databases are
   // opened in read-only mode
+  /* TODO TODO TODO per table or per environment??
   if (mode & O_RDONLY)
     catdb->config.flags |= UPS_READ_ONLY;
   if (mode & HA_OPEN_TMP_TABLE)
-    catdb->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
-  else
-    catdb->config.flags |= UPS_ENABLE_TRANSACTIONS | UPS_AUTO_RECOVERY;
+    catdb->flags |= UPS_ENABLE_TRANSACTIONS | UPS_IN_MEMORY;
+    */
 
   // open the Environment
   recovery_table = table;
   ups_status_t st = 0;
   if (catdb->env == 0) {
     st = ups_env_open(&catdb->env, env_name.c_str(),
-                                catdb->config.flags,
-                                catdb->config.params.empty() == false
-                                    ? &catdb->config.params[0]
+                                catdb->flags,
+                                catdb->params.empty() == false
+                                    ? &catdb->params[0]
                                     : 0);
     if (unlikely(st != 0)) {
       log_error("ups_env_open", st);
@@ -1104,9 +1117,8 @@ UpscaledbHandler::open(const char *name, int mode, uint test_if_locked)
     cattbl->autoidx = Catalogue::Index(db, 0, false, true, UPS_TYPE_UINT32);
   }
 
-  if (catdb->config.is_server_enabled)
-    DBUG_RETURN(attach_to_server(catdb->env, name + 1, // skip leading "."
-                            &catdb->config));
+  if (catdb->is_server_enabled)
+    DBUG_RETURN(attach_to_server(catdb, name + 1)); // skip leading "."
 
   DBUG_RETURN(0);
 }
@@ -2283,7 +2295,7 @@ UpscaledbHandler::delete_all_rows()
     DBUG_RETURN(1);
   }
 
-  st = create_all_databases(catdb, cattbl, table, &catdb->config);
+  st = create_all_databases(catdb, cattbl, table);
   if (unlikely(st)) {
     log_error("create_all_databases", st);
     DBUG_RETURN(1);

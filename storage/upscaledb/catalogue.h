@@ -27,8 +27,6 @@
 
 #include <ups/upscaledb_int.h>
 
-#include "configuration.h"
-
 class Field;
 
 namespace Catalogue {
@@ -94,9 +92,21 @@ struct Table {
 // upscaledb environment.
 //
 struct Database {
+  enum {
+    kDefaultServerPort = 54123,
+    kDefaultCacheSize = 128 * 1024 * 1024
+  };
+
   Database(std::string name_)
-    : name(name_), env(0) {
+    : name(name_), env(0), is_server_enabled(false),
+      server_port(kDefaultServerPort), flags(UPS_ENABLE_TRANSACTIONS) {
   }
+
+  // Adds a configuration value that was read from the configuration file
+  bool add_config_value(std::string &key, std::string &value, bool is_open);
+
+  // Adds the terminating element and sets the default cache size
+  void finalize_config();
 
   // the database name
   std::string name;
@@ -104,12 +114,21 @@ struct Database {
   // the upscaledb environment with all tables of this database
   ups_env_t *env;
 
-  // The configuration, as specified in the COMMENT and the .cnf file
-  Configuration config;
-
   // The tables, indexed by their name
   typedef std::map<std::string, Table *> TableMap;
   TableMap tables;
+
+  // Configuration setting: true if the server is enabled
+  bool is_server_enabled;
+
+  // Configuration setting: the server's port
+  uint16_t server_port;
+
+  // Configuration settings: flags for opening/creating the Environment
+  uint32_t flags;
+
+  // Configuration settings: parameters for opening/creating the Environment
+  std::vector<ups_parameter_t> params;
 };
 
 
