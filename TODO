@@ -73,6 +73,7 @@ o Implement BEGIN and COMMIT
         x So far this is not a significant change - make sure that all tests
             are still running
         x Failures b/c database needs recovery
+        x Store ups_srv_t in Catalogue (next to ups_env_t)
         o Read the configuration from "upscaledb.cnf" - but no longer use
             the COMMENT string!
             x store the configuration directly in the Catalogue
@@ -83,7 +84,6 @@ o Implement BEGIN and COMMIT
             o how to pass per-table values (i.e. for record compression)?
         o Remove the remaining traces of the UpscaledbShare and
             UpscaledbTableShare classes
-        o Store ups_srv_t in Catalogue (next to ups_env_t)
 
         o Reuse the Environment *per database*, not per table! This is the
             critical stage. Need to allocate databases, and a mapping for

@@ -141,10 +141,6 @@ custom_compare_func(ups_db_t *db, const uint8_t *lhs, uint32_t lhs_length,
   return 0;
 }
 
-static std::map<uint16_t, ups_srv_t *> servers;
-static boost::mutex servers_mutex;
-
-
 static void
 log_error_impl(const char *file, int line, const char *function,
                 ups_status_t st);
@@ -220,10 +216,9 @@ format_environment_name(const char *name)
 static inline void
 close_and_remove_share(const char *table_name, Catalogue::Database *catdb)
 {
-  boost::mutex::scoped_lock lock2(servers_mutex);
-  boost::mutex::scoped_lock lock3(Catalogue::databases_mutex);
+  boost::mutex::scoped_lock lock(Catalogue::databases_mutex);
   ups_env_t *env = catdb ? catdb->env : 0;
-  ups_srv_t *srv = catdb ? servers[catdb->server_port] : 0;
+  ups_srv_t *srv = catdb ? catdb->srv : 0;
 
   // also remove the environment from a server
   if (env && srv)
@@ -862,25 +857,24 @@ attach_to_server(Catalogue::Database *catdb, const char *path)
   ups_status_t st;
   assert(catdb->is_server_enabled);
 
-  boost::mutex::scoped_lock lock(servers_mutex);
-  ups_srv_t *srv = servers[catdb->server_port];
-  if (!srv) {
+  if (!catdb->srv) {
     ups_srv_config_t cfg;
     ::memset(&cfg, 0, sizeof(cfg));
     cfg.port = catdb->server_port;
 
-    st = ups_srv_init(&cfg, &srv);
+    st = ups_srv_init(&cfg, &catdb->srv);
     if (unlikely(st != 0)) {
       log_error("ups_srv_init", st);
       return 1;
     }
-    servers[catdb->server_port] = srv;
   }
-  st = ups_srv_add_env(srv, catdb->env, path);
+
+  st = ups_srv_add_env(catdb->srv, catdb->env, path);
   if (unlikely(st != 0)) {
     log_error("ups_srv_add_env", st);
     return 1;
   }
+
   return 0;
 }
 

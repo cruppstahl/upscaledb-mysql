@@ -26,6 +26,7 @@
 #include <boost/thread/mutex.hpp>
 
 #include <ups/upscaledb_int.h>
+#include <ups/upscaledb_srv.h>
 
 class Field;
 
@@ -98,7 +99,7 @@ struct Database {
   };
 
   Database(std::string name_)
-    : name(name_), env(0), is_server_enabled(false),
+    : name(name_), env(0), srv(0), is_server_enabled(false),
       server_port(kDefaultServerPort), flags(UPS_ENABLE_TRANSACTIONS) {
   }
 
@@ -111,8 +112,11 @@ struct Database {
   // the database name
   std::string name;
 
-  // the upscaledb environment with all tables of this database
+  // The upscaledb environment with all tables of this database
   ups_env_t *env;
+
+  // The upscaledb server
+  ups_srv_t *srv;
 
   // The tables, indexed by their name
   typedef std::map<std::string, Table *> TableMap;
