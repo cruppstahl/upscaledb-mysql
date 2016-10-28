@@ -26,6 +26,32 @@ boost::mutex databases_mutex;
 std::map<std::string, Database *> databases;
 
 bool
+Table::add_config_value(std::string &key, std::string &value, bool is_open)
+{
+  if (key == "enable_compression") {
+    if (is_open == true)
+      return true;
+    if (value == "none")
+      return true;
+    if (value == "zlib") {
+      record_compression = UPS_COMPRESSOR_ZLIB;
+      return true;
+    }
+    if (value == "snappy") {
+      record_compression = UPS_COMPRESSOR_SNAPPY;
+      return true;
+    }
+    if (value == "lzf") {
+      record_compression = UPS_COMPRESSOR_LZF;
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
+bool
 Database::add_config_value(std::string &key, std::string &value, bool is_open)
 {
   if (key == "enable_crc32") {
@@ -111,6 +137,22 @@ Database::add_config_value(std::string &key, std::string &value, bool is_open)
     catch (boost::bad_lexical_cast &) {
       return false;
     }
+  }
+
+  // still here? Check if this setting is for one of the tables ($table.key)
+  size_t pos = key.find(".");
+  if (pos != std::string::npos) {
+    std::string table_name(&key[0], &key[pos]);
+    key = key.substr(pos + 1);
+
+    // Create a table object if it does not yet exist
+    Table *cattbl = tables[table_name];
+    if (!cattbl) {
+      cattbl = new Table(table_name);
+      tables[table_name] = cattbl;
+    }
+
+    return cattbl->add_config_value(key, value, is_open);
   }
 
   return false;

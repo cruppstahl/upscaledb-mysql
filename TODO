@@ -80,10 +80,22 @@ o Implement BEGIN and COMMIT
             x when the environment is created: add an empty ".cnf" template
                 (unless it already exists)
             x improve error handling - parser prints to stderr
-            o how to pass initial values (i.e. page_size)?
-            o how to pass per-table values (i.e. for record compression)?
+            x how to pass initial values (i.e. page_size)? - they have to
+                be created PRIOR to the first table! -> document this
+                -> make sure that this works
+            x how to pass per-table values (i.e. for record compression)?
+                x use the COMMENT string, store info in the table
+                x print this in the template - there should be at least 1 table
+                    with values (even if they're the default)
+                x when reading the config file: $table.$key = $value
+            o keys and settings should be case-ignorant (convert everything to
+                lower case)
         o Remove the remaining traces of the UpscaledbShare and
             UpscaledbTableShare classes
+            o check ha_rocksdb.cc how they do the locking
+        o ALL tests must be running
+            o also test compression
+            o ... and remote access
 
         o Reuse the Environment *per database*, not per table! This is the
             critical stage. Need to allocate databases, and a mapping for
@@ -129,12 +141,14 @@ o implement index_read_map_last (or rather: index_read_last), set
     the flag HA_READ_ORDER (can be tested w/ wordpress)
 o implement UpscaledbHandler::records_in_range()
 o implement UpscaledbHandler::records() (does this make things faster??)
-o implement UpscaledbHandler::extra()
-o implement UpscaledbHandler::info()
+o implement UpscaledbHandler::extra()?
+. implement UpscaledbHandler::info()
     innobase_hton->show_status = innobase_show_status;
     -> print info of each environment and of each server, including all
         configuration parameters (page size, cache size etc)
-o implement handler::check()
+. implement handler::check()
+
+o enable integer compression
 
 o TPC-C does not yet work; the loader seems to be fine, but tpcc_run fails
     LD_LIBRARY_PATH=/usr/local/mysql/lib time ./tpcc_load -h localhost -d tpcc1000i -u root -p "" -w  1
@@ -170,9 +184,6 @@ o TPC-C does not yet work; the loader seems to be fine, but tpcc_run fails
 
 o properly close the environments when the server is shut down
 
-o per-index options via a "CREATE TABLE" comment
-    o integer compression (works with and without duplicates)
-
 o CREATE TABLE (id integer primary key) -> does not have to store any
     records! (but it does)
 
@@ -182,14 +193,18 @@ o create a list of manual tests that we have to perform:
     o ...
     -> try to automate as much as possible
 
+o update the documentation
+    o configuration: how to pass initial values (i.e. page_size)? - they have to
+        be created PRIOR to the first table! -> document this
+    o other configuration updates
+
+o we need to release 2.2.1...
+
 o public release ---------------------------------------------------------
 
 o secondary keys should not require a lookup of the primary key;
     directly store the blob id of the record
     -> look at BDB, they have a similar API
-
-o online DDL:
-    http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
 
 o support encryption
     m_create_info->used_fields & HA_CREATE_USED_PASSWORD (handler.h)
@@ -216,6 +231,9 @@ o support encryption
         pro: less code
         con: how to consolidate them then?
     -> see upscaledb's TODO file
+
+. online DDL:
+    http://dev.mysql.com/doc/refman/5.6/en/innodb-create-index-overview.html
 
 . need a code generator for the remote interface that shows how to
     de-serialize the database records

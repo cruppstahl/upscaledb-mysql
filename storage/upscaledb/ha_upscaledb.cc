@@ -804,13 +804,11 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
     }
 
     // is record compression enabled?
-#if 0
-    if (is_primary_key && config->record_compression) {
+    if (is_primary_key && cattbl->record_compression) {
       params[p].name = UPS_PARAM_RECORD_COMPRESSION;
-      params[p].value = config->record_compression;
+      params[p].value = cattbl->record_compression;
       p++;
     }
-#endif
 
     ups_status_t st = ups_env_create_db(catdb->env, &db, dbname(i),
                                 flags, params);
@@ -831,12 +829,10 @@ create_all_databases(Catalogue::Database *catdb, Catalogue::Table *cattbl,
       {0, 0}
     };
 
-#if 0
-    if (config->record_compression) {
+    if (cattbl->record_compression) {
       params[0].name = UPS_PARAM_RECORD_COMPRESSION;
-      params[0].value = config->record_compression;
+      params[0].value = cattbl->record_compression;
     }
-#endif
 
     ups_status_t st = ups_env_create_db(catdb->env, &db, 1,
                                 UPS_RECORD_NUMBER32, &params[0]);
@@ -928,11 +924,20 @@ UpscaledbHandler::create(const char *name, TABLE *table,
     catdb->tables[tbl_name] = cattbl;
   }
 
+  // parse the configuration settings from the configuration file (will
+  // not do anything if the file does not yet exist)
+  ParserStatus ps = parse_config_file(env_name + ".cnf", catdb, false);
+  if (!ps.first) {
+    sql_print_error("Invalid configuration file '%s.cnf': %s", env_name.c_str(),
+                    ps.second.c_str());
+    DBUG_RETURN(1);
+  }
+
   // parse the configuration settings in the table's COMMENT
   if (create_info->comment.length > 0) {
-    ParserStatus ps = parse_comment_list(create_info->comment.str, catdb);
+    ps = parse_comment_list(create_info->comment.str, cattbl);
     if (!ps.first) {
-      sql_print_error("%s", ps.second.c_str());
+      sql_print_error("Invalid COMMENT string: %s", ps.second.c_str());
       DBUG_RETURN(1);
     }
   }

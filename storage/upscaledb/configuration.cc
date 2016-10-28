@@ -59,7 +59,7 @@ make_parser_status(bool result, const char *format, ...)
 }
 
 ParserStatus
-parse_comment_list(const char *comment, Catalogue::Database *catdb)
+parse_comment_list(const char *comment, Catalogue::Table *cattbl)
 {
   std::string s = comment;
   std::string key;
@@ -73,7 +73,7 @@ parse_comment_list(const char *comment, Catalogue::Database *catdb)
     if (!parse_single_comment(token, key, value))
       return make_parser_status(false,
                       "Failed to parse '%s', '=' is missing", token.c_str());
-    if (!catdb->add_config_value(key, value, false))
+    if (!cattbl->add_config_value(key, value, false))
       return make_parser_status(false,
                       "Invalid option '%s' => '%s'", key.c_str(),
                       value.c_str());
@@ -85,13 +85,11 @@ parse_comment_list(const char *comment, Catalogue::Database *catdb)
     if (!parse_single_comment(token, key, value))
       return make_parser_status(false,
                       "Failed to parse '%s', '=' is missing", token.c_str());
-    if (!catdb->add_config_value(key, value, false))
+    if (!cattbl->add_config_value(key, value, false))
       return make_parser_status(false,
                       "Invalid option '%s' => '%s'", key.c_str(),
                       value.c_str());
   }
-
-  catdb->finalize_config();
 
   return make_parser_status(true, "");
 }
@@ -220,7 +218,7 @@ write_configuration_settings(std::string env_name, const char *comment,
           << std::endl
     << "# MUST be specified directly after creating the MySQL database, but "
           << std::endl
-    << "# before creating the actual table! Default: 16kb."
+    << "# before creating the first table! Default: 16kb."
           << std::endl
     << "#" << std::endl;
   p = get_parameter(catdb->params, UPS_PARAM_PAGE_SIZE);
@@ -230,25 +228,6 @@ write_configuration_settings(std::string env_name, const char *comment,
     f << "#   page_size = " << (16 * 1024) << std::endl;
   f << std::endl
     << std::endl;
-
-#if 0
-  for (size_t i = 0; i < catdb->params.size(); i++) {
-    switch (catdb->params[i].name) {
-      case UPS_PARAM_RECORD_COMPRESSION:
-        f << "enable_compression = ";
-        if (catdb->params[i].value == UPS_COMPRESSOR_ZLIB)
-          f << "zlib";
-        else if (catdb->params[i].value == UPS_COMPRESSOR_SNAPPY)
-          f << "snappy";
-        else if (catdb->params[i].value == UPS_COMPRESSOR_LZF)
-          f << "lzf";
-        else
-          f << "none";
-        f << std::endl;
-        break;
-    }
-  }
-#endif
 
   f << "# Enables remote access via the upscaledb server API. Opens a backdoor "
           << std::endl
@@ -267,5 +246,38 @@ write_configuration_settings(std::string env_name, const char *comment,
           << std::endl
     << "#" << std::endl;
   f << "#   server_port = " << catdb->server_port << std::endl;
+
+  f << std::endl
+    << std::endl;
+
+  f << "# Table-specific configuration settings are prefixed with the table's "
+        << std::endl
+    << "# name, followed by a dot ('.') and the parameter name."
+        << std::endl
+    << "# Example: users.enable_compression = zlib"
+        << std::endl
+    << "#" << std::endl
+    << "# Enables compression for the row data. The following codecs can be selected: "
+        << std::endl
+    << "# 'zlib', 'snappy', 'lzf' (zlib and snappy's availability depend on "
+        << std::endl
+    << "# upscaledb's compile-time configuration). Default: disabled."
+        << std::endl
+    << "# " << std::endl;
+  Catalogue::Table *cattbl = catdb->tables.begin()->second;
+  switch (cattbl->record_compression) {
+    case UPS_COMPRESSOR_ZLIB:
+      f << "    " << cattbl->name << ".enable_compression = zlib" << std::endl;
+      break;
+    case UPS_COMPRESSOR_SNAPPY:
+      f << "    " << cattbl->name << ".enable_compression = snappy" << std::endl;
+      break;
+    case UPS_COMPRESSOR_LZF:
+      f << "    " << cattbl->name << ".enable_compression = lzf" << std::endl;
+      break;
+    default:
+      f << "#   " << cattbl->name << ".enable_compression = none" << std::endl;
+      break;
+  }
 }
 

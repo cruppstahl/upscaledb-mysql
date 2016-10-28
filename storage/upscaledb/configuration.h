@@ -31,7 +31,7 @@
 typedef std::pair<bool, std::string> ParserStatus;
 
 extern ParserStatus
-parse_comment_list(const char *comment, Catalogue::Database *catdb);
+parse_comment_list(const char *comment, Catalogue::Table *cattbl);
 
 extern ParserStatus
 parse_config_file(const std::string &filename, Catalogue::Database *catdb,

@@ -65,8 +65,12 @@ struct Index {
 //
 struct Table {
   Table(std::string name_)
-    : name(name_), ref_length(0), initial_autoinc_value(0), autoinc_value(0) {
+    : name(name_), ref_length(0), initial_autoinc_value(0), autoinc_value(0),
+      record_compression(0) {
   }
+
+  // Adds a configuration value that was read from the configuration file
+  bool add_config_value(std::string &key, std::string &value, bool is_open);
 
   // the table name
   std::string name;
@@ -85,6 +89,9 @@ struct Table {
 
   // If there's no index then an auto-incremented primary key is created
   Index autoidx;
+
+  // Configuration settings: record compression
+  int record_compression;
 };
 
 
